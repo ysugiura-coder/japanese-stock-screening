@@ -17,6 +17,7 @@ async function fetchStocks(): Promise<StocksResponse> {
 // 決算データのモック（リアルタイム表示用）
 const mockRealtimeEarnings: EarningsData[] = [
   {
+    date: '2026-02-07',
     time: '13:36',
     code: '5237',
     companyName: 'ノザワ',
@@ -37,6 +38,7 @@ const mockRealtimeEarnings: EarningsData[] = [
     dividendChange: 0.0,
   },
   {
+    date: '2026-02-07',
     time: '13:37',
     code: '3563',
     companyName: 'FOOD & LIFE COMPANIES',

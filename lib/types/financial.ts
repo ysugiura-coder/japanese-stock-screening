@@ -29,6 +29,7 @@ export interface PTSData {
 
 // 決算情報
 export interface EarningsData {
+  date: string; // 日付（YYYY-MM-DD形式）
   time: string; // 時刻
   code: string;
   companyName: string;

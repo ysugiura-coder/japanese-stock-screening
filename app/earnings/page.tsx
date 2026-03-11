@@ -1,92 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { EarningsData } from '@/lib/types/financial';
+import { mockEarningsData } from '@/lib/data/mock-earnings';
 import { formatPercent } from '@/lib/utils/format';
-
-// モックデータ
-const mockEarningsData: EarningsData[] = [
-  {
-    time: '13:36',
-    code: '5237',
-    companyName: 'ノザワ',
-    type: '決算',
-    salesQQ: -8.7,
-    operatingProfitQQ: -13.8,
-    ordinaryProfitQQ: -10.6,
-    netProfitQQ: -17.9,
-    salesYY: -7.8,
-    operatingProfitYY: -12.6,
-    ordinaryProfitYY: -14.3,
-    netProfitYY: -34.4,
-    salesCon: 0.0,
-    operatingProfitCon: 0.0,
-    ordinaryProfitCon: 0.0,
-    netProfitCon: 0.0,
-    dividend: 40.00,
-    dividendChange: 0.0,
-  },
-  {
-    time: '13:37',
-    code: '4061',
-    companyName: 'デンカ',
-    type: '業績修正',
-    salesQQ: -8.3,
-    operatingProfitQQ: 13.7,
-    ordinaryProfitQQ: 35.0,
-    netProfitQQ: 248.6,
-    salesYY: -8.3,
-    operatingProfitYY: 247.9,
-    ordinaryProfitYY: 655.5,
-    netProfitYY: 305.4,
-    salesCon: -1.9,
-    operatingProfitCon: -3.5,
-    ordinaryProfitCon: -6.4,
-    netProfitCon: -2.0,
-    dividend: 100.00,
-    dividendChange: 0.0,
-  },
-  {
-    time: '13:37',
-    code: '3103',
-    companyName: 'ユニチカ',
-    type: '業績修正',
-    salesQQ: 7.2,
-    operatingProfitQQ: 20.9,
-    ordinaryProfitQQ: 32.7,
-    netProfitQQ: 395.2,
-    salesYY: 4.7,
-    operatingProfitYY: 64.3,
-    ordinaryProfitYY: 3.1,
-    netProfitYY: 197.1,
-    salesCon: 4.8,
-    operatingProfitCon: 26.7,
-    ordinaryProfitCon: 50.0,
-    netProfitCon: 2100.0,
-    dividend: 0.00,
-    dividendChange: null,
-  },
-  {
-    time: '13:37',
-    code: '3563',
-    companyName: 'FOOD & LIFE COMPANIES',
-    type: '決算',
-    salesQQ: 5.4,
-    operatingProfitQQ: 95.5,
-    ordinaryProfitQQ: 108.9,
-    netProfitQQ: 75.6,
-    salesYY: 23.7,
-    operatingProfitYY: 40.5,
-    ordinaryProfitYY: 41.5,
-    netProfitYY: 39.4,
-    salesCon: 7.2,
-    operatingProfitCon: 22.6,
-    ordinaryProfitCon: 32.3,
-    netProfitCon: 33.8,
-    dividend: 35.00,
-    dividendChange: 0.0,
-  },
-];
 
 export default function EarningsPage() {
   const [selectedDate, setSelectedDate] = useState('2026-02-07');
@@ -99,13 +16,53 @@ export default function EarningsPage() {
     その他: false,
   });
 
-  const filteredData = mockEarningsData.filter((item) => {
-    if (item.type === '決算') return filters.決算短信;
-    if (item.type === '業績修正') return filters.業績修正;
-    if (item.type === '配当修正') return filters.配当修正;
-    if (item.type === '決算資料') return filters.決算資料;
-    return filters.その他;
-  });
+  // データに含まれる日付一覧（ソート済み）
+  const availableDates = useMemo(() => {
+    const dates = [...new Set(mockEarningsData.map((d) => d.date))].sort();
+    return dates;
+  }, []);
+
+  // 選択日付でフィルタ → 種別フィルタ
+  const filteredData = useMemo(() => {
+    return mockEarningsData
+      .filter((item) => item.date === selectedDate)
+      .filter((item) => {
+        if (item.type === '決算') return filters.決算短信;
+        if (item.type === '業績修正') return filters.業績修正;
+        if (item.type === '配当修正') return filters.配当修正;
+        if (item.type === '決算資料') return filters.決算資料;
+        return filters.その他;
+      });
+  }, [selectedDate, filters]);
+
+  // データのある前の日付へ移動
+  const goToPrevDate = () => {
+    const idx = availableDates.indexOf(selectedDate);
+    if (idx > 0) {
+      setSelectedDate(availableDates[idx - 1]);
+    } else if (idx === -1) {
+      // 現在選択中の日付がデータにない場合、直前のデータ日付を探す
+      const prev = availableDates.filter((d) => d < selectedDate).pop();
+      if (prev) setSelectedDate(prev);
+    }
+  };
+
+  // データのある次の日付へ移動
+  const goToNextDate = () => {
+    const idx = availableDates.indexOf(selectedDate);
+    if (idx >= 0 && idx < availableDates.length - 1) {
+      setSelectedDate(availableDates[idx + 1]);
+    } else if (idx === -1) {
+      const next = availableDates.find((d) => d > selectedDate);
+      if (next) setSelectedDate(next);
+    }
+  };
+
+  // 今日の日付へ移動
+  const goToToday = () => {
+    const today = new Date().toISOString().split('T')[0];
+    setSelectedDate(today);
+  };
 
   const getTypeColor = (type: string) => {
     switch (type) {
@@ -118,6 +75,12 @@ export default function EarningsPage() {
     }
   };
 
+  // MM/DD形式で表示
+  const formatDateShort = (dateStr: string) => {
+    const [, m, d] = dateStr.split('-');
+    return `${m}/${d}`;
+  };
+
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       <div className="max-w-7xl mx-auto px-4 py-8">
@@ -125,13 +88,34 @@ export default function EarningsPage() {
         <div className="mb-6">
           <div className="flex justify-between items-center mb-4">
             <h1 className="text-2xl font-bold">決算分析リアルタイムビューア</h1>
-            <div className="flex items-center gap-4">
-              <span className="text-gray-400">日付: {selectedDate}</span>
-              <div className="flex gap-2">
-                <button className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">移動</button>
-                <button className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">今日</button>
-                <button className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">再読込</button>
-              </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={goToPrevDate}
+                className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+              >
+                ◀ 前日
+              </button>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white [color-scheme:dark]"
+              />
+              <button
+                onClick={goToNextDate}
+                className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+              >
+                翌日 ▶
+              </button>
+              <button
+                onClick={goToToday}
+                className="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-sm"
+              >
+                今日
+              </button>
+              <span className="text-xs text-gray-400 ml-2">
+                ({filteredData.length}件 / 全{availableDates.length}日分)
+              </span>
             </div>
           </div>
 
@@ -160,6 +144,7 @@ export default function EarningsPage() {
             <table className="w-full text-sm">
               <thead className="bg-gray-700">
                 <tr>
+                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">日付</th>
                   <th className="px-3 py-2 text-left text-xs font-medium uppercase">時刻</th>
                   <th className="px-3 py-2 text-left text-xs font-medium uppercase">コード</th>
                   <th className="px-3 py-2 text-left text-xs font-medium uppercase">企業名</th>
@@ -180,139 +165,148 @@ export default function EarningsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700">
-                {filteredData.map((data, index) => (
-                  <tr
-                    key={index}
-                    onClick={() => setSelectedCompany(data)}
-                    className={`hover:bg-gray-750 cursor-pointer ${
-                      selectedCompany?.code === data.code ? 'bg-blue-900/30' : ''
-                    }`}
-                  >
-                    <td className="px-3 py-2">{data.time}</td>
-                    <td className="px-3 py-2">{data.code}</td>
-                    <td className="px-3 py-2">{data.companyName}</td>
-                    <td className={`px-3 py-2 ${getTypeColor(data.type)}`}>
-                      {data.type}
-                      {data.type === '業績修正' && (data.salesYY && data.salesYY > 0 ? '↑' : '↓')}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.salesQQ !== null ? (
-                        <span className={data.salesQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.salesQQ)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.operatingProfitQQ !== null ? (
-                        <span className={data.operatingProfitQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.operatingProfitQQ)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.ordinaryProfitQQ !== null ? (
-                        <span className={data.ordinaryProfitQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.ordinaryProfitQQ)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.netProfitQQ !== null ? (
-                        <span className={data.netProfitQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.netProfitQQ)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.salesYY !== null ? (
-                        <span className={data.salesYY >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.salesYY)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.operatingProfitYY !== null ? (
-                        <span className={data.operatingProfitYY >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.operatingProfitYY)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.ordinaryProfitYY !== null ? (
-                        <span className={data.ordinaryProfitYY >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.ordinaryProfitYY)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.netProfitYY !== null ? (
-                        <span className={data.netProfitYY >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.netProfitYY)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.salesCon !== null ? (
-                        <span className={data.salesCon >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.salesCon)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.operatingProfitCon !== null ? (
-                        <span className={data.operatingProfitCon >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.operatingProfitCon)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.ordinaryProfitCon !== null ? (
-                        <span className={data.ordinaryProfitCon >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.ordinaryProfitCon)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {data.netProfitCon !== null ? (
-                        <span className={data.netProfitCon >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(data.netProfitCon)}
-                        </span>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-xs">
-                      {data.dividend !== null && (
-                        <span>
-                          合計{data.dividend.toFixed(2)}円
-                          {data.dividendChange !== null && ` 前期比${formatPercent(data.dividendChange)}`}
-                        </span>
-                      )}
+                {filteredData.length === 0 ? (
+                  <tr>
+                    <td colSpan={18} className="px-3 py-8 text-center text-gray-400">
+                      この日付のデータはありません
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  filteredData.map((data, index) => (
+                    <tr
+                      key={index}
+                      onClick={() => setSelectedCompany(data)}
+                      className={`hover:bg-gray-750 cursor-pointer ${
+                        selectedCompany?.code === data.code ? 'bg-blue-900/30' : ''
+                      }`}
+                    >
+                      <td className="px-3 py-2 text-gray-400">{formatDateShort(data.date)}</td>
+                      <td className="px-3 py-2">{data.time}</td>
+                      <td className="px-3 py-2">{data.code}</td>
+                      <td className="px-3 py-2">{data.companyName}</td>
+                      <td className={`px-3 py-2 ${getTypeColor(data.type)}`}>
+                        {data.type}
+                        {data.type === '業績修正' && (data.salesYY && data.salesYY > 0 ? '↑' : '↓')}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.salesQQ !== null ? (
+                          <span className={data.salesQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.salesQQ)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.operatingProfitQQ !== null ? (
+                          <span className={data.operatingProfitQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.operatingProfitQQ)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.ordinaryProfitQQ !== null ? (
+                          <span className={data.ordinaryProfitQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.ordinaryProfitQQ)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.netProfitQQ !== null ? (
+                          <span className={data.netProfitQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.netProfitQQ)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.salesYY !== null ? (
+                          <span className={data.salesYY >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.salesYY)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.operatingProfitYY !== null ? (
+                          <span className={data.operatingProfitYY >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.operatingProfitYY)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.ordinaryProfitYY !== null ? (
+                          <span className={data.ordinaryProfitYY >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.ordinaryProfitYY)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.netProfitYY !== null ? (
+                          <span className={data.netProfitYY >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.netProfitYY)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.salesCon !== null ? (
+                          <span className={data.salesCon >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.salesCon)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.operatingProfitCon !== null ? (
+                          <span className={data.operatingProfitCon >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.operatingProfitCon)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.ordinaryProfitCon !== null ? (
+                          <span className={data.ordinaryProfitCon >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.ordinaryProfitCon)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {data.netProfitCon !== null ? (
+                          <span className={data.netProfitCon >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(data.netProfitCon)}
+                          </span>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        {data.dividend !== null && (
+                          <span>
+                            合計{data.dividend.toFixed(2)}円
+                            {data.dividendChange !== null && ` 前期比${formatPercent(data.dividendChange)}`}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
