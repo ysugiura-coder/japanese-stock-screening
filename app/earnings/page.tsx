@@ -93,14 +93,24 @@ export default function EarningsPage() {
     setSelectedDate(today);
   };
 
-  const getTypeColor = (type: string) => {
+  const getTypeBadge = (type: string, salesYY?: number | null) => {
     switch (type) {
+      case '決算':
+        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-gray-600 text-white whitespace-nowrap">決算</span>;
       case '業績修正':
-        return 'text-yellow-400';
+        return (
+          <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap ${
+            salesYY && salesYY > 0 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-yellow-500/20 text-yellow-400'
+          }`}>
+            修正{salesYY && salesYY > 0 ? '↑' : '↓'}
+          </span>
+        );
       case '配当修正':
-        return 'text-blue-400';
+        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-400 whitespace-nowrap">配当</span>;
+      case '決算資料':
+        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400 whitespace-nowrap">資料</span>;
       default:
-        return 'text-white';
+        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-gray-500/20 text-gray-400 whitespace-nowrap">他</span>;
     }
   };
 
@@ -232,9 +242,8 @@ export default function EarningsPage() {
                         <span className="text-gray-400">{data.code}</span>{' '}
                         <span>{data.companyName}</span>
                       </td>
-                      <td className={`px-3 py-2 ${getTypeColor(data.type)}`}>
-                        {data.type}
-                        {data.type === '業績修正' && (data.salesYY && data.salesYY > 0 ? '↑' : '↓')}
+                      <td className="px-3 py-2">
+                        {getTypeBadge(data.type, data.salesYY)}
                       </td>
                       {numericColumns.map((col) => {
                         const val = data[col.key as keyof EarningsData] as number | null;

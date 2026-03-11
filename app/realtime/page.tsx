@@ -98,8 +98,6 @@ export default function RealtimePage() {
             <div className="flex items-center gap-4">
               <span className="text-gray-400">日付: {selectedDate}</span>
               <div className="flex gap-2">
-                <button className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">移動</button>
-                <button className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">今日</button>
                 <button className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">再読込</button>
               </div>
             </div>
