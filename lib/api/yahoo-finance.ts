@@ -160,10 +160,10 @@ export async function fetchStocksFromYahooFinance(): Promise<Stock[]> {
         roe = Math.round((q.epsTrailingTwelveMonths / q.bookValue) * 100 * 100) / 100;
       }
 
-      // 配当利回り: Yahoo は 0.02 = 2% 形式で返す
+      // 配当利回り: Screener API はパーセンテージ形式（2.74 = 2.74%）で返す
       let dividendYield: number | null = null;
       if (q.dividendYield != null && q.dividendYield > 0) {
-        dividendYield = Math.round(q.dividendYield * 100 * 100) / 100;
+        dividendYield = Math.round(q.dividendYield * 100) / 100;
       }
 
       return {
