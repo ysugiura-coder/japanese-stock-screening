@@ -11,7 +11,7 @@ const navigationItems = [
   { href: '/realtime', label: 'リアルタイム', icon: '⚡' },
   { href: '/earnings', label: '決算', icon: '📊' },
   { href: '/orders', label: '受注', icon: '📋' },
-  { href: '/takapi', label: 'たかぴー情報', icon: '💡' },
+  { href: '/takapi', label: 'SNS情報', icon: '💡' },
   { href: '/settings', label: '設定', icon: '⚙️' },
 ];
 

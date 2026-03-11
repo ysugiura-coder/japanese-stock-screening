@@ -8,7 +8,15 @@ import { formatPercent } from '@/lib/utils/format';
 type SortConfig = { key: string; direction: 'asc' | 'desc' } | null;
 
 export default function EarningsPage() {
-  const [selectedDate, setSelectedDate] = useState('2026-02-07');
+  // データに含まれる日付一覧（ソート済み）
+  const availableDates = useMemo(() => {
+    return [...new Set(mockEarningsData.map((d) => d.date))].sort();
+  }, []);
+
+  // 初期表示は最新のデータ日付
+  const latestDate = availableDates[availableDates.length - 1] || '2026-02-13';
+
+  const [selectedDate, setSelectedDate] = useState(latestDate);
   const [selectedCompany, setSelectedCompany] = useState<EarningsData | null>(null);
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
   const [filters, setFilters] = useState({
@@ -18,12 +26,6 @@ export default function EarningsPage() {
     決算資料: false,
     その他: false,
   });
-
-  // データに含まれる日付一覧（ソート済み）
-  const availableDates = useMemo(() => {
-    const dates = [...new Set(mockEarningsData.map((d) => d.date))].sort();
-    return dates;
-  }, []);
 
   // 選択日付でフィルタ → 種別フィルタ
   const filteredData = useMemo(() => {
