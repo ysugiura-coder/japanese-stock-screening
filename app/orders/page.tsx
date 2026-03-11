@@ -1,8 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { OrderData } from '@/lib/types/financial';
-import { formatNumber, formatPercent } from '@/lib/utils/format';
+import { formatPercent } from '@/lib/utils/format';
+
+type SortConfig = { key: string; direction: 'asc' | 'desc' } | null;
 
 // モックデータ
 const mockOrderData: OrderData[] = [
@@ -87,6 +89,31 @@ const mockOrderData: OrderData[] = [
 
 export default function OrdersPage() {
   const [selectedDate, setSelectedDate] = useState('2026-02-10');
+  const [sortConfig, setSortConfig] = useState<SortConfig>(null);
+
+  const handleSort = (key: string) => {
+    setSortConfig((prev) =>
+      prev?.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: 'desc' }
+    );
+  };
+
+  const sortIcon = (key: string) => {
+    if (sortConfig?.key !== key) return '';
+    return sortConfig.direction === 'asc' ? ' ▲' : ' ▼';
+  };
+
+  const sortedData = useMemo(() => {
+    if (!sortConfig) return mockOrderData;
+    return [...mockOrderData].sort((a, b) => {
+      const aVal = a[sortConfig.key as keyof OrderData] as number | null;
+      const bVal = b[sortConfig.key as keyof OrderData] as number | null;
+      if (aVal === null || aVal === undefined) return 1;
+      if (bVal === null || bVal === undefined) return -1;
+      return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
+    });
+  }, [sortConfig]);
 
   const formatOrderValue = (value: number): string => {
     if (value >= 10000) {
@@ -94,6 +121,8 @@ export default function OrdersPage() {
     }
     return `${value}億円`;
   };
+
+  const sortableThClass = 'px-4 py-3 text-left text-xs font-medium uppercase cursor-pointer hover:bg-gray-600 select-none';
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
@@ -121,16 +150,28 @@ export default function OrdersPage() {
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase">コード</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase">企業名</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase">四半期</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase">受注高</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase">受注YoY</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase">受注QoQ</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase">受注残高</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase">残YOY</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase">残QoQ</th>
+                  <th onClick={() => handleSort('orderValue')} className={sortableThClass}>
+                    受注高{sortIcon('orderValue')}
+                  </th>
+                  <th onClick={() => handleSort('orderYoY')} className={sortableThClass}>
+                    受注YoY{sortIcon('orderYoY')}
+                  </th>
+                  <th onClick={() => handleSort('orderQoQ')} className={sortableThClass}>
+                    受注QoQ{sortIcon('orderQoQ')}
+                  </th>
+                  <th onClick={() => handleSort('outstandingOrders')} className={sortableThClass}>
+                    受注残高{sortIcon('outstandingOrders')}
+                  </th>
+                  <th onClick={() => handleSort('outstandingYoY')} className={sortableThClass}>
+                    残YOY{sortIcon('outstandingYoY')}
+                  </th>
+                  <th onClick={() => handleSort('outstandingQoQ')} className={sortableThClass}>
+                    残QoQ{sortIcon('outstandingQoQ')}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700">
-                {mockOrderData.map((order, index) => (
+                {sortedData.map((order, index) => (
                   <tr key={index} className="hover:bg-gray-750">
                     <td className="px-4 py-3 text-sm">{order.code}</td>
                     <td className="px-4 py-3 text-sm">{order.companyName}</td>

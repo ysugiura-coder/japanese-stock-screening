@@ -10,42 +10,45 @@ const mockPTSRising: PTSData[] = [
     rank: 1,
     code: '7256',
     name: '河西工',
+    companyName: '河西工業',
     closingPrice: 213,
     ptsPrice: 293,
     change: 80,
     changeRate: 37.56,
     volume: 142700,
     news: [
-      { date: '02/16', title: '中期経営計画に関するお知らせ' },
-      { date: '02/16', title: '資金使途及び支出予定時期の変更に関するお知らせ' },
+      { date: '02/16', title: '中期経営計画に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_7256.html' },
+      { date: '02/16', title: '資金使途及び支出予定時期の変更に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_7256.html' },
     ],
   },
   {
     rank: 2,
     code: '4316',
     name: 'ビーマップ',
+    companyName: 'ビーマップ',
     closingPrice: 1149,
     ptsPrice: 1430,
     change: 281,
     changeRate: 24.46,
     volume: 126500,
     news: [
-      { date: '02/10', title: '株式会社イグニスとの、自由診療クリニック向けAIネイティブ...' },
-      { date: '02/10', title: '2026年3月期第3四半期決算短信〔日本基準〕(連結)' },
+      { date: '02/10', title: '株式会社イグニスとの、自由診療クリニック向けAIネイティブ...', url: 'https://www.release.tdnet.info/inbs/I_list_001_4316.html' },
+      { date: '02/10', title: '2026年3月期第3四半期決算短信〔日本基準〕(連結)', url: 'https://www.release.tdnet.info/inbs/I_list_001_4316.html' },
     ],
   },
   {
     rank: 3,
     code: '2970',
     name: 'ジーエルシー',
+    companyName: 'グッドライフカンパニー',
     closingPrice: 1019,
     ptsPrice: 1255,
     change: 236,
     changeRate: 23.16,
     volume: 41400,
     news: [
-      { date: '02/13', title: '取締役候補者の選任に関するお知らせ' },
-      { date: '02/13', title: '株主優待制度の導入に関するお知らせ' },
+      { date: '02/13', title: '取締役候補者の選任に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_2970.html' },
+      { date: '02/13', title: '株主優待制度の導入に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_2970.html' },
     ],
   },
 ];
@@ -56,42 +59,45 @@ const mockPTSFalling: PTSData[] = [
     rank: 1,
     code: '6085',
     name: 'アーキテクツ',
+    companyName: 'アーキテクツ・スタジオ・ジャパン',
     closingPrice: 1615,
     ptsPrice: 1236,
     change: -379,
     changeRate: -23.47,
     volume: 44900,
     news: [
-      { date: '02/16', title: '業績予想(連結)の修正に関するお知らせ' },
-      { date: '02/16', title: '2026年2月期第3四半期決算短信〔日本基準〕(連結)' },
+      { date: '02/16', title: '業績予想(連結)の修正に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_6085.html' },
+      { date: '02/16', title: '2026年2月期第3四半期決算短信〔日本基準〕(連結)', url: 'https://www.release.tdnet.info/inbs/I_list_001_6085.html' },
     ],
   },
   {
     rank: 2,
     code: '248A',
     name: 'キッズスター',
+    companyName: 'キッズスター',
     closingPrice: 1450,
     ptsPrice: 1168,
     change: -282,
     changeRate: -19.45,
     volume: 46100,
     news: [
-      { date: '02/13', title: '2025年12月期決算説明資料' },
-      { date: '02/13', title: '2025年12月期決算短信〔日本基準〕(連結)' },
+      { date: '02/13', title: '2025年12月期決算説明資料', url: 'https://www.release.tdnet.info/inbs/I_list_001_248A.html' },
+      { date: '02/13', title: '2025年12月期決算短信〔日本基準〕(連結)', url: 'https://www.release.tdnet.info/inbs/I_list_001_248A.html' },
     ],
   },
   {
     rank: 3,
     code: '352A',
     name: 'ロイブ',
+    companyName: 'ロイブ',
     closingPrice: 706,
     ptsPrice: 588,
     change: -118,
     changeRate: -16.71,
     volume: 64000,
     news: [
-      { date: '02/13', title: '2026年3月期第3四半期決算説明会資料' },
-      { date: '02/13', title: '2026年3月期第3四半期決算短信〔日本基準〕(非連結)' },
+      { date: '02/13', title: '2026年3月期第3四半期決算説明会資料', url: 'https://www.release.tdnet.info/inbs/I_list_001_352A.html' },
+      { date: '02/13', title: '2026年3月期第3四半期決算短信〔日本基準〕(非連結)', url: 'https://www.release.tdnet.info/inbs/I_list_001_352A.html' },
     ],
   },
 ];
@@ -103,39 +109,41 @@ export default function PTSPage() {
     month: '2-digit',
     day: '2-digit',
   }).replace(/\//g, '/');
-  
+
   // より多くのモックデータを追加
-  const allRisingData = [
+  const allRisingData: PTSData[] = [
     ...mockPTSRising,
     {
       rank: 4,
       code: '485A',
       name: 'PowerX',
+      companyName: 'パワーエックス',
       closingPrice: 3025,
       ptsPrice: 3649.5,
       change: 624.5,
       changeRate: 20.64,
       volume: 177400,
       news: [
-        { date: '02/16', title: '新規事業に関するお知らせ' },
+        { date: '02/16', title: '新規事業に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_485A.html' },
       ],
     },
   ];
 
-  const allFallingData = [
+  const allFallingData: PTSData[] = [
     ...mockPTSFalling,
     {
       rank: 4,
       code: '7771',
       name: '日本精密',
+      companyName: '日本精密',
       closingPrice: 625,
       ptsPrice: 525,
       change: -100,
       changeRate: -16.00,
       volume: 10600,
       news: [
-        { date: '02/13', title: '令和8年3月期第3四半期決算短信〔日本基準〕(連結)' },
-        { date: '02/13', title: '営業外収益の計上に関するお知らせ' },
+        { date: '02/13', title: '令和8年3月期第3四半期決算短信〔日本基準〕(連結)', url: 'https://www.release.tdnet.info/inbs/I_list_001_7771.html' },
+        { date: '02/13', title: '営業外収益の計上に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_7771.html' },
       ],
     },
   ];
@@ -186,8 +194,7 @@ export default function PTSPage() {
               <thead className="bg-gray-700">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase">#</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase">CODE</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase">銘柄</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase">CODE / 銘柄</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase">終値</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase">PTS</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase">騰落</th>
@@ -205,8 +212,10 @@ export default function PTSPage() {
                     }`}
                   >
                     <td className="px-4 py-3 text-sm font-bold">{data.rank}</td>
-                    <td className="px-4 py-3 text-sm">{data.code}</td>
-                    <td className="px-4 py-3 text-sm">{data.name}</td>
+                    <td className="px-4 py-3 text-sm whitespace-nowrap">
+                      <span className="text-gray-400">{data.code}</span>{' '}
+                      <span>{data.companyName || data.name}</span>
+                    </td>
                     <td className="px-4 py-3 text-sm">{formatCurrency(data.closingPrice)}</td>
                     <td className="px-4 py-3 text-sm">{formatCurrency(data.ptsPrice)}</td>
                     <td className={`px-4 py-3 text-sm ${
@@ -229,8 +238,21 @@ export default function PTSPage() {
                     <td className="px-4 py-3 text-sm">
                       <div className="space-y-1">
                         {data.news.map((item, idx) => (
-                          <div key={idx} className="text-xs text-gray-400">
-                            {item.date} {item.title}
+                          <div key={idx} className="text-xs">
+                            <span className="text-gray-500">{item.date}</span>{' '}
+                            {item.url ? (
+                              <a
+                                href={item.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-400 hover:text-blue-300 hover:underline"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {item.title}
+                              </a>
+                            ) : (
+                              <span className="text-gray-400">{item.title}</span>
+                            )}
                           </div>
                         ))}
                       </div>

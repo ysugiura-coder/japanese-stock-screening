@@ -25,6 +25,15 @@ export const mockEarningsData: EarningsData[] = [
     netProfitCon: 3.8,
     dividend: 75.0,
     dividendChange: 7.1,
+    segments: {
+      period: '2026年3月期3Q',
+      segments: [
+        { name: '自動車', sales: 8500000, profit: 850000, salesYoY: 8.2, profitYoY: 15.3 },
+        { name: '金融', sales: 2800000, profit: 420000, salesYoY: 12.5, profitYoY: 18.7 },
+        { name: 'モビリティ', sales: 1200000, profit: 95000, salesYoY: -3.5, profitYoY: -12.8 },
+        { name: 'その他', sales: 500000, profit: 35000, salesYoY: 5.1, profitYoY: 2.3 },
+      ],
+    },
   },
   {
     date: '2026-02-13',
@@ -46,6 +55,17 @@ export const mockEarningsData: EarningsData[] = [
     netProfitCon: 10.1,
     dividend: 50.0,
     dividendChange: 11.1,
+    segments: {
+      period: '2026年3月期3Q',
+      segments: [
+        { name: 'ゲーム＆ネットワークサービス', sales: 1050000, profit: 180000, salesYoY: 5.8, profitYoY: 22.4 },
+        { name: '音楽', sales: 480000, profit: 125000, salesYoY: 15.2, profitYoY: 35.6 },
+        { name: '映画', sales: 380000, profit: 52000, salesYoY: -8.3, profitYoY: -18.5 },
+        { name: 'エレクトロニクス・プロダクツ＆ソリューション', sales: 650000, profit: 48000, salesYoY: 2.1, profitYoY: -5.2 },
+        { name: 'イメージング＆センシング・ソリューション', sales: 420000, profit: 85000, salesYoY: 18.5, profitYoY: 42.8 },
+        { name: '金融', sales: 550000, profit: 95000, salesYoY: 8.7, profitYoY: 12.3 },
+      ],
+    },
   },
   {
     date: '2026-02-07',
@@ -88,6 +108,15 @@ export const mockEarningsData: EarningsData[] = [
     netProfitCon: -2.0,
     dividend: 100.0,
     dividendChange: 0.0,
+    segments: {
+      period: '2026年3月期3Q',
+      segments: [
+        { name: 'エラストマー・インフラソリューション', sales: 95000, profit: 8500, salesYoY: -5.2, profitYoY: 45.8 },
+        { name: 'ポリマーソリューション', sales: 72000, profit: 6200, salesYoY: -12.1, profitYoY: -8.3 },
+        { name: 'スペシャリティケミカル', sales: 48000, profit: 12000, salesYoY: 3.8, profitYoY: 680.5 },
+        { name: 'ライフイノベーション', sales: 35000, profit: 4500, salesYoY: 8.2, profitYoY: 22.1 },
+      ],
+    },
   },
   {
     date: '2026-02-07',
@@ -151,6 +180,16 @@ export const mockEarningsData: EarningsData[] = [
     netProfitCon: 14.2,
     dividend: 20.5,
     dividendChange: 13.9,
+    segments: {
+      period: '2026年3月期3Q',
+      segments: [
+        { name: 'デジタルサービス', sales: 520000, profit: 125000, salesYoY: 8.5, profitYoY: 22.3 },
+        { name: '法人・リテール', sales: 680000, profit: 185000, salesYoY: 15.2, profitYoY: 38.5 },
+        { name: 'グローバルコマーシャルバンキング', sales: 450000, profit: 98000, salesYoY: 12.8, profitYoY: 45.2 },
+        { name: '受託財産', sales: 280000, profit: 72000, salesYoY: 18.5, profitYoY: 28.7 },
+        { name: '市場', sales: 350000, profit: 145000, salesYoY: 5.2, profitYoY: 15.8 },
+      ],
+    },
   },
   {
     date: '2026-01-30',
@@ -172,6 +211,14 @@ export const mockEarningsData: EarningsData[] = [
     netProfitCon: 85.0,
     dividend: 44.0,
     dividendChange: 0.0,
+    segments: {
+      period: '2026年3月期3Q',
+      segments: [
+        { name: 'ソフトバンク・ビジョン・ファンド', sales: 0, profit: 1850000, salesYoY: null, profitYoY: 520.3 },
+        { name: 'ソフトバンク(通信)', sales: 1420000, profit: 285000, salesYoY: 5.8, profitYoY: 8.2 },
+        { name: 'Arm', sales: 280000, profit: 65000, salesYoY: 42.5, profitYoY: 185.2 },
+      ],
+    },
   },
 
   // ===== 2025年 =====
@@ -238,6 +285,13 @@ export const mockEarningsData: EarningsData[] = [
     netProfitCon: 6.8,
     dividend: 150.0,
     dividendChange: 15.4,
+    segments: {
+      period: '2026年3月期2Q',
+      segments: [
+        { name: '日本', sales: 185000, profit: 92000, salesYoY: 10.2, profitYoY: 15.8 },
+        { name: '海外', sales: 295000, profit: 148000, salesYoY: 18.5, profitYoY: 24.2 },
+      ],
+    },
   },
   {
     date: '2025-11-07',
@@ -281,6 +335,14 @@ export const mockEarningsData: EarningsData[] = [
     netProfitCon: 7.5,
     dividend: 28.0,
     dividendChange: 16.7,
+    segments: {
+      period: '2026年3月期1Q',
+      segments: [
+        { name: 'HRテクノロジー(Indeed等)', sales: 285000, profit: 68000, salesYoY: 18.5, profitYoY: 45.2 },
+        { name: 'マッチング＆ソリューション', sales: 195000, profit: 42000, salesYoY: 8.2, profitYoY: 22.8 },
+        { name: '人材派遣', sales: 220000, profit: 15000, salesYoY: 5.5, profitYoY: -3.2 },
+      ],
+    },
   },
   {
     date: '2025-08-08',
@@ -323,6 +385,15 @@ export const mockEarningsData: EarningsData[] = [
     netProfitCon: 7.8,
     dividend: 175.0,
     dividendChange: 9.4,
+    segments: {
+      period: '2025年8月期1Q',
+      segments: [
+        { name: '国内ユニクロ', sales: 285000, profit: 62000, salesYoY: 8.5, profitYoY: 15.2 },
+        { name: '海外ユニクロ', sales: 420000, profit: 85000, salesYoY: 22.8, profitYoY: 38.5 },
+        { name: 'ジーユー', sales: 85000, profit: 12000, salesYoY: 12.5, profitYoY: 25.8 },
+        { name: 'グローバルブランド', sales: 35000, profit: 2500, salesYoY: -5.2, profitYoY: -18.5 },
+      ],
+    },
   },
   {
     date: '2025-07-31',
@@ -366,6 +437,16 @@ export const mockEarningsData: EarningsData[] = [
     netProfitCon: 5.5,
     dividend: 65.0,
     dividendChange: 18.2,
+    segments: {
+      period: '2025年3月期本決算',
+      segments: [
+        { name: 'デジタルシステム＆サービス', sales: 2580000, profit: 385000, salesYoY: 12.5, profitYoY: 28.3 },
+        { name: 'コネクティブインダストリーズ', sales: 1850000, profit: 165000, salesYoY: 5.8, profitYoY: 15.2 },
+        { name: 'エネルギー', sales: 980000, profit: 72000, salesYoY: 8.2, profitYoY: 35.8 },
+        { name: '鉄道システム', sales: 720000, profit: 48000, salesYoY: -2.5, profitYoY: -8.5 },
+        { name: '日立Astemo', sales: 1520000, profit: 85000, salesYoY: 15.8, profitYoY: 22.5 },
+      ],
+    },
   },
   {
     date: '2025-05-12',
@@ -387,6 +468,13 @@ export const mockEarningsData: EarningsData[] = [
     netProfitCon: 11.5,
     dividend: 200.0,
     dividendChange: 25.0,
+    segments: {
+      period: '2025年3月期本決算',
+      segments: [
+        { name: '半導体製造装置', sales: 1820000, profit: 520000, salesYoY: 18.5, profitYoY: 42.8 },
+        { name: 'フラットパネルディスプレイ製造装置', sales: 180000, profit: 28000, salesYoY: -15.2, profitYoY: -32.5 },
+      ],
+    },
   },
   {
     date: '2025-05-09',

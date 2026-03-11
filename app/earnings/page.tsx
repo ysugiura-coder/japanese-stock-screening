@@ -5,9 +5,12 @@ import { EarningsData } from '@/lib/types/financial';
 import { mockEarningsData } from '@/lib/data/mock-earnings';
 import { formatPercent } from '@/lib/utils/format';
 
+type SortConfig = { key: string; direction: 'asc' | 'desc' } | null;
+
 export default function EarningsPage() {
   const [selectedDate, setSelectedDate] = useState('2026-02-07');
   const [selectedCompany, setSelectedCompany] = useState<EarningsData | null>(null);
+  const [sortConfig, setSortConfig] = useState<SortConfig>(null);
   const [filters, setFilters] = useState({
     決算短信: true,
     業績修正: true,
@@ -35,13 +38,39 @@ export default function EarningsPage() {
       });
   }, [selectedDate, filters]);
 
+  // ソート適用（null値は末尾）
+  const sortedData = useMemo(() => {
+    if (!sortConfig) return filteredData;
+    return [...filteredData].sort((a, b) => {
+      const aVal = a[sortConfig.key as keyof EarningsData] as number | null;
+      const bVal = b[sortConfig.key as keyof EarningsData] as number | null;
+      if (aVal === null || aVal === undefined) return 1;
+      if (bVal === null || bVal === undefined) return -1;
+      return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
+    });
+  }, [filteredData, sortConfig]);
+
+  // ヘッダークリックでトグル
+  const handleSort = (key: string) => {
+    setSortConfig((prev) =>
+      prev?.key === key
+        ? { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: 'desc' }
+    );
+  };
+
+  // ソートアイコン
+  const sortIcon = (key: string) => {
+    if (sortConfig?.key !== key) return '';
+    return sortConfig.direction === 'asc' ? ' ▲' : ' ▼';
+  };
+
   // データのある前の日付へ移動
   const goToPrevDate = () => {
     const idx = availableDates.indexOf(selectedDate);
     if (idx > 0) {
       setSelectedDate(availableDates[idx - 1]);
     } else if (idx === -1) {
-      // 現在選択中の日付がデータにない場合、直前のデータ日付を探す
       const prev = availableDates.filter((d) => d < selectedDate).pop();
       if (prev) setSelectedDate(prev);
     }
@@ -80,6 +109,25 @@ export default function EarningsPage() {
     const [, m, d] = dateStr.split('-');
     return `${m}/${d}`;
   };
+
+  // ソート可能ヘッダーのスタイル
+  const sortableThClass = 'px-3 py-2 text-left text-xs font-medium uppercase cursor-pointer hover:bg-gray-600 select-none';
+
+  // 数値カラムの定義
+  const numericColumns: { key: string; label: string }[] = [
+    { key: 'salesQQ', label: '売QQ' },
+    { key: 'operatingProfitQQ', label: '営QQ' },
+    { key: 'ordinaryProfitQQ', label: '経QQ' },
+    { key: 'netProfitQQ', label: '利QQ' },
+    { key: 'salesYY', label: '売YY' },
+    { key: 'operatingProfitYY', label: '営YY' },
+    { key: 'ordinaryProfitYY', label: '経YY' },
+    { key: 'netProfitYY', label: '利YY' },
+    { key: 'salesCon', label: '売Con' },
+    { key: 'operatingProfitCon', label: '営Con' },
+    { key: 'ordinaryProfitCon', label: '経Con' },
+    { key: 'netProfitCon', label: '利Con' },
+  ];
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
@@ -146,156 +194,62 @@ export default function EarningsPage() {
                 <tr>
                   <th className="px-3 py-2 text-left text-xs font-medium uppercase">日付</th>
                   <th className="px-3 py-2 text-left text-xs font-medium uppercase">時刻</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">コード</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">企業名</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">コード / 企業名</th>
                   <th className="px-3 py-2 text-left text-xs font-medium uppercase">種別</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">売QQ</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">営QQ</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">経QQ</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">利QQ</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">売YY</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">営YY</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">経YY</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">利YY</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">売Con</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">営Con</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">経Con</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase">利Con</th>
+                  {numericColumns.map((col) => (
+                    <th
+                      key={col.key}
+                      onClick={() => handleSort(col.key)}
+                      className={sortableThClass}
+                    >
+                      {col.label}{sortIcon(col.key)}
+                    </th>
+                  ))}
                   <th className="px-3 py-2 text-left text-xs font-medium uppercase">情報</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700">
-                {filteredData.length === 0 ? (
+                {sortedData.length === 0 ? (
                   <tr>
-                    <td colSpan={18} className="px-3 py-8 text-center text-gray-400">
+                    <td colSpan={17} className="px-3 py-8 text-center text-gray-400">
                       この日付のデータはありません
                     </td>
                   </tr>
                 ) : (
-                  filteredData.map((data, index) => (
+                  sortedData.map((data, index) => (
                     <tr
                       key={index}
                       onClick={() => setSelectedCompany(data)}
                       className={`hover:bg-gray-750 cursor-pointer ${
-                        selectedCompany?.code === data.code ? 'bg-blue-900/30' : ''
+                        selectedCompany?.code === data.code && selectedCompany?.date === data.date
+                          ? 'bg-blue-900/30'
+                          : ''
                       }`}
                     >
                       <td className="px-3 py-2 text-gray-400">{formatDateShort(data.date)}</td>
                       <td className="px-3 py-2">{data.time}</td>
-                      <td className="px-3 py-2">{data.code}</td>
-                      <td className="px-3 py-2">{data.companyName}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className="text-gray-400">{data.code}</span>{' '}
+                        <span>{data.companyName}</span>
+                      </td>
                       <td className={`px-3 py-2 ${getTypeColor(data.type)}`}>
                         {data.type}
                         {data.type === '業績修正' && (data.salesYY && data.salesYY > 0 ? '↑' : '↓')}
                       </td>
-                      <td className="px-3 py-2">
-                        {data.salesQQ !== null ? (
-                          <span className={data.salesQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.salesQQ)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.operatingProfitQQ !== null ? (
-                          <span className={data.operatingProfitQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.operatingProfitQQ)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.ordinaryProfitQQ !== null ? (
-                          <span className={data.ordinaryProfitQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.ordinaryProfitQQ)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.netProfitQQ !== null ? (
-                          <span className={data.netProfitQQ >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.netProfitQQ)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.salesYY !== null ? (
-                          <span className={data.salesYY >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.salesYY)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.operatingProfitYY !== null ? (
-                          <span className={data.operatingProfitYY >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.operatingProfitYY)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.ordinaryProfitYY !== null ? (
-                          <span className={data.ordinaryProfitYY >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.ordinaryProfitYY)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.netProfitYY !== null ? (
-                          <span className={data.netProfitYY >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.netProfitYY)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.salesCon !== null ? (
-                          <span className={data.salesCon >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.salesCon)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.operatingProfitCon !== null ? (
-                          <span className={data.operatingProfitCon >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.operatingProfitCon)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.ordinaryProfitCon !== null ? (
-                          <span className={data.ordinaryProfitCon >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.ordinaryProfitCon)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        {data.netProfitCon !== null ? (
-                          <span className={data.netProfitCon >= 0 ? 'text-green-400' : 'text-red-400'}>
-                            {formatPercent(data.netProfitCon)}
-                          </span>
-                        ) : (
-                          '-'
-                        )}
-                      </td>
+                      {numericColumns.map((col) => {
+                        const val = data[col.key as keyof EarningsData] as number | null;
+                        return (
+                          <td key={col.key} className="px-3 py-2">
+                            {val !== null && val !== undefined ? (
+                              <span className={val >= 0 ? 'text-green-400' : 'text-red-400'}>
+                                {formatPercent(val)}
+                              </span>
+                            ) : (
+                              '-'
+                            )}
+                          </td>
+                        );
+                      })}
                       <td className="px-3 py-2 text-xs">
                         {data.dividend !== null && (
                           <span>
@@ -355,11 +309,81 @@ export default function EarningsPage() {
               </div>
             </div>
 
+            {/* セグメント別業績 or 四半期推移 */}
             <div className="bg-gray-800 rounded-lg p-6">
-              <h2 className="text-xl font-bold mb-4">四半期業績推移(百万円)</h2>
-              <div className="text-sm text-gray-400">
-                <p>詳細な四半期データは実装時に追加します</p>
-              </div>
+              {selectedCompany.segments ? (
+                <>
+                  <h2 className="text-xl font-bold mb-4">
+                    セグメント別業績 ({selectedCompany.segments.period})
+                  </h2>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-700">
+                        <tr>
+                          <th className="px-3 py-2 text-left text-xs font-medium">事業</th>
+                          <th className="px-3 py-2 text-right text-xs font-medium">売上(百万)</th>
+                          <th className="px-3 py-2 text-right text-xs font-medium">利益(百万)</th>
+                          <th className="px-3 py-2 text-right text-xs font-medium">売上YoY</th>
+                          <th className="px-3 py-2 text-right text-xs font-medium">利益YoY</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-700">
+                        {[...selectedCompany.segments.segments]
+                          .sort((a, b) => Math.abs(b.profitYoY ?? 0) - Math.abs(a.profitYoY ?? 0))
+                          .map((seg, idx) => {
+                            const isHighlight =
+                              seg.profitYoY !== null &&
+                              seg.profitYoY !== undefined &&
+                              Math.abs(seg.profitYoY) >= 30;
+                            return (
+                              <tr
+                                key={idx}
+                                className={isHighlight ? 'bg-yellow-900/20' : ''}
+                              >
+                                <td className="px-3 py-2">{seg.name}</td>
+                                <td className="px-3 py-2 text-right">
+                                  {(seg.sales / 1000000).toFixed(0)}百万
+                                </td>
+                                <td className="px-3 py-2 text-right">
+                                  {(seg.profit / 1000000).toFixed(0)}百万
+                                </td>
+                                <td className="px-3 py-2 text-right">
+                                  {seg.salesYoY !== null && seg.salesYoY !== undefined ? (
+                                    <span className={seg.salesYoY >= 0 ? 'text-green-400' : 'text-red-400'}>
+                                      {formatPercent(seg.salesYoY)}
+                                    </span>
+                                  ) : (
+                                    '-'
+                                  )}
+                                </td>
+                                <td className="px-3 py-2 text-right">
+                                  {seg.profitYoY !== null && seg.profitYoY !== undefined ? (
+                                    <span
+                                      className={`${seg.profitYoY >= 0 ? 'text-green-400' : 'text-red-400'} ${
+                                        isHighlight ? 'font-bold' : ''
+                                      }`}
+                                    >
+                                      {formatPercent(seg.profitYoY)}
+                                    </span>
+                                  ) : (
+                                    '-'
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-xl font-bold mb-4">四半期業績推移(百万円)</h2>
+                  <div className="text-sm text-gray-400">
+                    <p>詳細な四半期データは実装時に追加します</p>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}

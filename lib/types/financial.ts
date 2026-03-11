@@ -16,6 +16,7 @@ export interface PTSData {
   rank: number;
   code: string;
   name: string;
+  companyName?: string; // 正式社名
   closingPrice: number; // 終値
   ptsPrice: number; // PTS価格
   change: number; // 騰落
@@ -24,6 +25,7 @@ export interface PTSData {
   news: Array<{
     date: string;
     title: string;
+    url?: string; // 適時開示リンク
   }>;
 }
 
@@ -48,6 +50,7 @@ export interface EarningsData {
   netProfitCon: number | null; // 利Con（%）
   dividend: number | null; // 配当（円）
   dividendChange: number | null; // 配当前期比（%）
+  segments?: SegmentPerformance; // セグメント別業績
 }
 
 // 四半期業績
@@ -68,5 +71,7 @@ export interface SegmentPerformance {
     name: string;
     sales: number;
     profit: number;
+    salesYoY?: number | null; // 売上YoY変化率（%）
+    profitYoY?: number | null; // 利益YoY変化率（%）
   }[];
 }
