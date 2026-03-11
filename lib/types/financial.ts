@@ -1,5 +1,6 @@
 // 受注情報
 export interface OrderData {
+  date: string; // 日付（YYYY-MM-DD形式）
   code: string;
   companyName: string;
   quarter: string; // 1Q, 2Q, 3Q, 4Q

@@ -6,9 +6,11 @@ import { formatPercent } from '@/lib/utils/format';
 
 type SortConfig = { key: string; direction: 'asc' | 'desc' } | null;
 
-// モックデータ
+// モックデータ（複数日に分散）
 const mockOrderData: OrderData[] = [
+  // 2026-02-10
   {
+    date: '2026-02-10',
     code: '1414',
     companyName: 'ショーボンドホールディングス',
     quarter: '2Q',
@@ -20,6 +22,7 @@ const mockOrderData: OrderData[] = [
     outstandingQoQ: null,
   },
   {
+    date: '2026-02-10',
     code: '1963',
     companyName: '日揮ホールディングス',
     quarter: '3Q',
@@ -31,6 +34,7 @@ const mockOrderData: OrderData[] = [
     outstandingQoQ: null,
   },
   {
+    date: '2026-02-10',
     code: '6384',
     companyName: '昭和真空',
     quarter: '3Q',
@@ -42,6 +46,7 @@ const mockOrderData: OrderData[] = [
     outstandingQoQ: null,
   },
   {
+    date: '2026-02-10',
     code: '7122',
     companyName: '近畿車輛',
     quarter: '3Q',
@@ -52,7 +57,9 @@ const mockOrderData: OrderData[] = [
     outstandingYoY: -0.1,
     outstandingQoQ: 0.7,
   },
+  // 2026-02-07
   {
+    date: '2026-02-07',
     code: '6302',
     companyName: '住友重機械工業',
     quarter: '4Q',
@@ -64,6 +71,7 @@ const mockOrderData: OrderData[] = [
     outstandingQoQ: null,
   },
   {
+    date: '2026-02-07',
     code: '6466',
     companyName: 'TVE',
     quarter: '1Q',
@@ -75,6 +83,7 @@ const mockOrderData: OrderData[] = [
     outstandingQoQ: null,
   },
   {
+    date: '2026-02-07',
     code: '1866',
     companyName: '北野建設',
     quarter: '3Q',
@@ -85,11 +94,132 @@ const mockOrderData: OrderData[] = [
     outstandingYoY: -13.1,
     outstandingQoQ: null,
   },
+  // 2026-01-31
+  {
+    date: '2026-01-31',
+    code: '6301',
+    companyName: 'コマツ',
+    quarter: '3Q',
+    orderValue: 9850,
+    orderYoY: 8.5,
+    orderQoQ: 12.3,
+    outstandingOrders: 18500,
+    outstandingYoY: 5.2,
+    outstandingQoQ: 2.8,
+  },
+  {
+    date: '2026-01-31',
+    code: '7011',
+    companyName: '三菱重工業',
+    quarter: '3Q',
+    orderValue: 18200,
+    orderYoY: 15.2,
+    orderQoQ: 8.7,
+    outstandingOrders: 52000,
+    outstandingYoY: 12.8,
+    outstandingQoQ: 3.5,
+  },
+  {
+    date: '2026-01-31',
+    code: '6305',
+    companyName: '日立建機',
+    quarter: '3Q',
+    orderValue: 3200,
+    orderYoY: -5.8,
+    orderQoQ: -12.5,
+    outstandingOrders: 8500,
+    outstandingYoY: -3.2,
+    outstandingQoQ: -1.8,
+  },
+  // 2025-11-14
+  {
+    date: '2025-11-14',
+    code: '1801',
+    companyName: '大成建設',
+    quarter: '2Q',
+    orderValue: 5800,
+    orderYoY: 12.5,
+    orderQoQ: 35.2,
+    outstandingOrders: 22000,
+    outstandingYoY: 8.5,
+    outstandingQoQ: 4.2,
+  },
+  {
+    date: '2025-11-14',
+    code: '1802',
+    companyName: '大林組',
+    quarter: '2Q',
+    orderValue: 6200,
+    orderYoY: -3.5,
+    orderQoQ: 18.8,
+    outstandingOrders: 19500,
+    outstandingYoY: 2.8,
+    outstandingQoQ: 1.5,
+  },
+  {
+    date: '2025-11-14',
+    code: '1803',
+    companyName: '清水建設',
+    quarter: '2Q',
+    orderValue: 5100,
+    orderYoY: 8.2,
+    orderQoQ: -5.8,
+    outstandingOrders: 17800,
+    outstandingYoY: 5.5,
+    outstandingQoQ: 2.1,
+  },
+  // 2025-08-08
+  {
+    date: '2025-08-08',
+    code: '7012',
+    companyName: '川崎重工業',
+    quarter: '1Q',
+    orderValue: 4500,
+    orderYoY: 22.5,
+    orderQoQ: -15.2,
+    outstandingOrders: 15800,
+    outstandingYoY: 18.5,
+    outstandingQoQ: 5.8,
+  },
+  {
+    date: '2025-08-08',
+    code: '6326',
+    companyName: 'クボタ',
+    quarter: '1Q',
+    orderValue: 5200,
+    orderYoY: -8.2,
+    orderQoQ: -22.5,
+    outstandingOrders: 12500,
+    outstandingYoY: -2.5,
+    outstandingQoQ: -5.2,
+  },
 ];
 
 export default function OrdersPage() {
   const [selectedDate, setSelectedDate] = useState('2026-02-10');
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
+
+  // データに含まれる日付一覧（ソート済み）
+  const availableDates = useMemo(() => {
+    return [...new Set(mockOrderData.map((d) => d.date))].sort();
+  }, []);
+
+  // 選択日付でフィルタ
+  const filteredData = useMemo(() => {
+    return mockOrderData.filter((item) => item.date === selectedDate);
+  }, [selectedDate]);
+
+  // ソート適用（null値は末尾）
+  const sortedData = useMemo(() => {
+    if (!sortConfig) return filteredData;
+    return [...filteredData].sort((a, b) => {
+      const aVal = a[sortConfig.key as keyof OrderData] as number | null;
+      const bVal = b[sortConfig.key as keyof OrderData] as number | null;
+      if (aVal === null || aVal === undefined) return 1;
+      if (bVal === null || bVal === undefined) return -1;
+      return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
+    });
+  }, [filteredData, sortConfig]);
 
   const handleSort = (key: string) => {
     setSortConfig((prev) =>
@@ -104,16 +234,33 @@ export default function OrdersPage() {
     return sortConfig.direction === 'asc' ? ' ▲' : ' ▼';
   };
 
-  const sortedData = useMemo(() => {
-    if (!sortConfig) return mockOrderData;
-    return [...mockOrderData].sort((a, b) => {
-      const aVal = a[sortConfig.key as keyof OrderData] as number | null;
-      const bVal = b[sortConfig.key as keyof OrderData] as number | null;
-      if (aVal === null || aVal === undefined) return 1;
-      if (bVal === null || bVal === undefined) return -1;
-      return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
-    });
-  }, [sortConfig]);
+  // データのある前の日付へ移動
+  const goToPrevDate = () => {
+    const idx = availableDates.indexOf(selectedDate);
+    if (idx > 0) {
+      setSelectedDate(availableDates[idx - 1]);
+    } else if (idx === -1) {
+      const prev = availableDates.filter((d) => d < selectedDate).pop();
+      if (prev) setSelectedDate(prev);
+    }
+  };
+
+  // データのある次の日付へ移動
+  const goToNextDate = () => {
+    const idx = availableDates.indexOf(selectedDate);
+    if (idx >= 0 && idx < availableDates.length - 1) {
+      setSelectedDate(availableDates[idx + 1]);
+    } else if (idx === -1) {
+      const next = availableDates.find((d) => d > selectedDate);
+      if (next) setSelectedDate(next);
+    }
+  };
+
+  // 今日の日付へ移動
+  const goToToday = () => {
+    const today = new Date().toISOString().split('T')[0];
+    setSelectedDate(today);
+  };
 
   const formatOrderValue = (value: number): string => {
     if (value >= 10000) {
@@ -130,14 +277,34 @@ export default function OrdersPage() {
         {/* ヘッダー */}
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold">受注一覧</h1>
-          <div className="flex items-center gap-4">
-            <span className="text-gray-400">日付: {selectedDate}</span>
-            <div className="flex gap-2">
-              <button className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">移動</button>
-              <button className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">◀前日</button>
-              <button className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">翌日▶</button>
-              <button className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded">再取得</button>
-            </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={goToPrevDate}
+              className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+            >
+              ◀ 前日
+            </button>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              className="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white [color-scheme:dark]"
+            />
+            <button
+              onClick={goToNextDate}
+              className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+            >
+              翌日 ▶
+            </button>
+            <button
+              onClick={goToToday}
+              className="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-sm"
+            >
+              今日
+            </button>
+            <span className="text-xs text-gray-400 ml-2">
+              ({filteredData.length}件 / 全{availableDates.length}日分)
+            </span>
           </div>
         </div>
 
@@ -171,53 +338,61 @@ export default function OrdersPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700">
-                {sortedData.map((order, index) => (
-                  <tr key={index} className="hover:bg-gray-750">
-                    <td className="px-4 py-3 text-sm">{order.code}</td>
-                    <td className="px-4 py-3 text-sm">{order.companyName}</td>
-                    <td className="px-4 py-3 text-sm">{order.quarter}</td>
-                    <td className="px-4 py-3 text-sm">{formatOrderValue(order.orderValue)}</td>
-                    <td className="px-4 py-3 text-sm">
-                      {order.orderYoY !== null ? (
-                        <span className={order.orderYoY >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(order.orderYoY)}
-                        </span>
-                      ) : (
-                        <span className="text-gray-500">-</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      {order.orderQoQ !== null ? (
-                        <span className={order.orderQoQ >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(order.orderQoQ)}
-                        </span>
-                      ) : (
-                        <span className="text-gray-500">-</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      {order.outstandingOrders > 0 ? formatOrderValue(order.outstandingOrders) : '-'}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      {order.outstandingYoY !== null ? (
-                        <span className={order.outstandingYoY >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(order.outstandingYoY)}
-                        </span>
-                      ) : (
-                        <span className="text-gray-500">-</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      {order.outstandingQoQ !== null ? (
-                        <span className={order.outstandingQoQ >= 0 ? 'text-green-400' : 'text-red-400'}>
-                          {formatPercent(order.outstandingQoQ)}
-                        </span>
-                      ) : (
-                        <span className="text-gray-500">-</span>
-                      )}
+                {sortedData.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                      この日付のデータはありません
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  sortedData.map((order, index) => (
+                    <tr key={index} className="hover:bg-gray-750">
+                      <td className="px-4 py-3 text-sm">{order.code}</td>
+                      <td className="px-4 py-3 text-sm">{order.companyName}</td>
+                      <td className="px-4 py-3 text-sm">{order.quarter}</td>
+                      <td className="px-4 py-3 text-sm">{formatOrderValue(order.orderValue)}</td>
+                      <td className="px-4 py-3 text-sm">
+                        {order.orderYoY !== null ? (
+                          <span className={order.orderYoY >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(order.orderYoY)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-500">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        {order.orderQoQ !== null ? (
+                          <span className={order.orderQoQ >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(order.orderQoQ)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-500">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        {order.outstandingOrders > 0 ? formatOrderValue(order.outstandingOrders) : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        {order.outstandingYoY !== null ? (
+                          <span className={order.outstandingYoY >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(order.outstandingYoY)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-500">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        {order.outstandingQoQ !== null ? (
+                          <span className={order.outstandingQoQ >= 0 ? 'text-green-400' : 'text-red-400'}>
+                            {formatPercent(order.outstandingQoQ)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-500">-</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
