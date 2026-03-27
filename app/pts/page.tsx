@@ -27,8 +27,8 @@ function generateMockData() {
       changeRate: 37.56,
       volume: 142700,
       news: [
-        { date: today, title: '中期経営計画に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_7256.html' },
-        { date: today, title: '資金使途及び支出予定時期の変更に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_7256.html' },
+        { date: today, title: '中期経営計画に関するお知らせ', url: 'https://kabutan.jp/stock/news?code=7256' },
+        { date: today, title: '資金使途及び支出予定時期の変更に関するお知らせ', url: 'https://kabutan.jp/stock/news?code=7256' },
       ],
     },
     {
@@ -42,8 +42,8 @@ function generateMockData() {
       changeRate: 24.46,
       volume: 126500,
       news: [
-        { date: today, title: '株式会社イグニスとの、自由診療クリニック向けAIネイティブ...', url: 'https://www.release.tdnet.info/inbs/I_list_001_4316.html' },
-        { date: today, title: '2026年3月期第3四半期決算短信〔日本基準〕(連結)', url: 'https://www.release.tdnet.info/inbs/I_list_001_4316.html' },
+        { date: today, title: '株式会社イグニスとの、自由診療クリニック向けAIネイティブ...', url: 'https://kabutan.jp/stock/news?code=4316' },
+        { date: today, title: '2026年3月期第3四半期決算短信〔日本基準〕(連結)', url: 'https://kabutan.jp/stock/news?code=4316' },
       ],
     },
     {
@@ -57,8 +57,8 @@ function generateMockData() {
       changeRate: 23.16,
       volume: 41400,
       news: [
-        { date: today, title: '取締役候補者の選任に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_2970.html' },
-        { date: today, title: '株主優待制度の導入に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_2970.html' },
+        { date: today, title: '取締役候補者の選任に関するお知らせ', url: 'https://kabutan.jp/stock/news?code=2970' },
+        { date: today, title: '株主優待制度の導入に関するお知らせ', url: 'https://kabutan.jp/stock/news?code=2970' },
       ],
     },
     {
@@ -72,7 +72,7 @@ function generateMockData() {
       changeRate: 20.64,
       volume: 177400,
       news: [
-        { date: today, title: '新規事業に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_485A.html' },
+        { date: today, title: '新規事業に関するお知らせ', url: 'https://kabutan.jp/stock/news?code=485A' },
       ],
     },
   ];
@@ -89,8 +89,8 @@ function generateMockData() {
       changeRate: -23.47,
       volume: 44900,
       news: [
-        { date: today, title: '業績予想(連結)の修正に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_6085.html' },
-        { date: today, title: '2026年2月期第3四半期決算短信〔日本基準〕(連結)', url: 'https://www.release.tdnet.info/inbs/I_list_001_6085.html' },
+        { date: today, title: '業績予想(連結)の修正に関するお知らせ', url: 'https://kabutan.jp/stock/news?code=6085' },
+        { date: today, title: '2026年2月期第3四半期決算短信〔日本基準〕(連結)', url: 'https://kabutan.jp/stock/news?code=6085' },
       ],
     },
     {
@@ -104,8 +104,8 @@ function generateMockData() {
       changeRate: -19.45,
       volume: 46100,
       news: [
-        { date: today, title: '2025年12月期決算説明資料', url: 'https://www.release.tdnet.info/inbs/I_list_001_248A.html' },
-        { date: today, title: '2025年12月期決算短信〔日本基準〕(連結)', url: 'https://www.release.tdnet.info/inbs/I_list_001_248A.html' },
+        { date: today, title: '2025年12月期決算説明資料', url: 'https://kabutan.jp/stock/news?code=248A' },
+        { date: today, title: '2025年12月期決算短信〔日本基準〕(連結)', url: 'https://kabutan.jp/stock/news?code=248A' },
       ],
     },
     {
@@ -119,8 +119,8 @@ function generateMockData() {
       changeRate: -16.71,
       volume: 64000,
       news: [
-        { date: today, title: '2026年3月期第3四半期決算説明会資料', url: 'https://www.release.tdnet.info/inbs/I_list_001_352A.html' },
-        { date: today, title: '2026年3月期第3四半期決算短信〔日本基準〕(非連結)', url: 'https://www.release.tdnet.info/inbs/I_list_001_352A.html' },
+        { date: today, title: '2026年3月期第3四半期決算説明会資料', url: 'https://kabutan.jp/stock/news?code=352A' },
+        { date: today, title: '2026年3月期第3四半期決算短信〔日本基準〕(非連結)', url: 'https://kabutan.jp/stock/news?code=352A' },
       ],
     },
     {
@@ -134,8 +134,8 @@ function generateMockData() {
       changeRate: -16.00,
       volume: 10600,
       news: [
-        { date: today, title: '令和8年3月期第3四半期決算短信〔日本基準〕(連結)', url: 'https://www.release.tdnet.info/inbs/I_list_001_7771.html' },
-        { date: today, title: '営業外収益の計上に関するお知らせ', url: 'https://www.release.tdnet.info/inbs/I_list_001_7771.html' },
+        { date: today, title: '令和8年3月期第3四半期決算短信〔日本基準〕(連結)', url: 'https://kabutan.jp/stock/news?code=7771' },
+        { date: today, title: '営業外収益の計上に関するお知らせ', url: 'https://kabutan.jp/stock/news?code=7771' },
       ],
     },
   ];

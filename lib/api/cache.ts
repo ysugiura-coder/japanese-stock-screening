@@ -51,4 +51,6 @@ export const memoryCache = new MemoryCache();
 export const CACHE_KEYS = {
   STOCKS: 'stocks:all',
   STOCKS_UPDATED_AT: 'stocks:updated_at',
+  EARNINGS: 'earnings', // earnings:{date} の形式で使用
+  EARNINGS_UPDATED_AT: 'earnings:updated_at',
 } as const;

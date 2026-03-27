@@ -52,6 +52,10 @@ export interface EarningsData {
   dividend: number | null; // 配当（円）
   dividendChange: number | null; // 配当前期比（%）
   segments?: SegmentPerformance; // セグメント別業績
+  // EDINET連携用フィールド
+  edinetDocId?: string; // EDINETドキュメントID
+  edinetDocDescription?: string; // 書類概要
+  dataSource?: 'edinet' | 'tdnet' | 'mock'; // データソース
 }
 
 // 四半期業績

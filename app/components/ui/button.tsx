@@ -10,6 +10,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = 'default', size = 'md', ...props }, ref) => {
     return (
       <button
+        type="button"
         className={cn(
           'inline-flex items-center justify-center rounded-md font-medium transition-colors',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2',
