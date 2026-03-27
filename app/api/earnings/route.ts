@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
       try {
         const earnings = await fetchEarningsFromEdinet(date, edinetApiKey, {
           parseFinancials,
-          maxConcurrent: 5,
+          maxConcurrent: 20,
         });
 
         const earningsWithSource = earnings.map((e) => ({

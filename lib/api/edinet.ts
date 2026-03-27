@@ -3,6 +3,7 @@
 
 import JSZip from 'jszip';
 import { EarningsData } from '@/lib/types/financial';
+import { memoryCache } from '@/lib/api/cache';
 
 const EDINET_BASE_URL = 'https://api.edinet-fsa.go.jp/api/v2';
 
@@ -131,6 +132,11 @@ export async function fetchAndParseXbrl(
   docID: string,
   apiKey: string,
 ): Promise<FinancialSummary | null> {
+  // 書類単位のXBRL解析キャッシュ（30日間）— XBRLは公開後変更されない
+  const xbrlCacheKey = `xbrl:${docID}`;
+  const cached = memoryCache.get<FinancialSummary | null>(xbrlCacheKey);
+  if (cached !== null) return cached;
+
   try {
     const url = `${EDINET_BASE_URL}/documents/${docID}?type=1&Subscription-Key=${apiKey}`;
     const res = await fetch(url);
@@ -182,7 +188,10 @@ export async function fetchAndParseXbrl(
     }
 
     if (!xbrlText) return null;
-    return parseXbrlContent(xbrlText);
+    const result = parseXbrlContent(xbrlText);
+    // 解析結果をキャッシュ（30日間）
+    memoryCache.set(xbrlCacheKey, result, 30 * 24 * 60 * 60 * 1000);
+    return result;
   } catch (e) {
     console.error(`XBRL parse error for ${docID}:`, e);
     return null;
@@ -432,36 +441,33 @@ export async function fetchEarningsFromEdinet(
   apiKey: string,
   options?: { parseFinancials?: boolean; maxConcurrent?: number },
 ): Promise<EarningsData[]> {
-  const { parseFinancials = true, maxConcurrent = 5 } = options || {};
+  const { parseFinancials = true, maxConcurrent = 20 } = options || {};
 
   const allDocs = await fetchEdinetDocumentList(date, apiKey);
   const earningsDocs = filterEarningsDocuments(allDocs);
   if (earningsDocs.length === 0) return [];
 
-  const results: EarningsData[] = [];
+  let results: EarningsData[];
 
   if (parseFinancials) {
+    // バッチ処理（遅延なし）
+    const allResults: EarningsData[] = [];
     for (let i = 0; i < earningsDocs.length; i += maxConcurrent) {
       const batch = earningsDocs.slice(i, i + maxConcurrent);
       const batchResults = await Promise.all(
         batch.map(async (doc) => {
           let fs: FinancialSummary | null = null;
-          // XBRL があれば XBRL を優先パース
           if (doc.xbrlFlag === '1') {
             fs = await fetchAndParseXbrl(doc.docID, apiKey);
           }
           return mapDocumentToEarnings(doc, fs);
         }),
       );
-      results.push(...batchResults);
-      if (i + maxConcurrent < earningsDocs.length) {
-        await new Promise((r) => setTimeout(r, 300));
-      }
+      allResults.push(...batchResults);
     }
+    results = allResults;
   } else {
-    for (const doc of earningsDocs) {
-      results.push(mapDocumentToEarnings(doc, null));
-    }
+    results = earningsDocs.map((doc) => mapDocumentToEarnings(doc, null));
   }
 
   results.sort((a, b) => a.time.localeCompare(b.time));
