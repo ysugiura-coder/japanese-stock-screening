@@ -3,6 +3,9 @@ import { fetchEarningsFromEdinet } from '@/lib/api/edinet';
 import { memoryCache } from '@/lib/api/cache';
 import { mockEarningsData } from '@/lib/data/mock-earnings';
 
+// Vercel Serverless Function のタイムアウト延長（XBRL解析に時間がかかるため）
+export const maxDuration = 60;
+
 // CORS headers
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',

@@ -347,12 +347,6 @@ export default function EarningsPage() {
           <div className="flex justify-between items-center mb-4">
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-bold">決算分析リアルタイムビューア</h1>
-              <span className={`inline-block px-2 py-1 rounded text-xs font-medium ${
-                activeSource === 'edinet' ? 'bg-green-600/30 text-green-300 border border-green-600/50' :
-                'bg-gray-600/30 text-gray-300 border border-gray-600/50'
-              }`}>
-                {activeSource === 'edinet' ? 'EDINET実データ' : 'モックデータ'}
-              </span>
             </div>
             <div className="flex items-center gap-2">
               <button type="button" onClick={goToPrevDate} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">

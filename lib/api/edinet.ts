@@ -4,7 +4,7 @@
 import JSZip from 'jszip';
 import { EarningsData } from '@/lib/types/financial';
 
-const EDINET_BASE_URL = 'https://disclosure.edinet-fsa.go.jp/api/v2';
+const EDINET_BASE_URL = 'https://api.edinet-fsa.go.jp/api/v2';
 
 // ========== 型定義 ==========
 
