@@ -36,7 +36,7 @@ export interface EarningsData {
   time: string; // 時刻
   code: string;
   companyName: string;
-  type: '決算' | '業績修正' | '配当修正' | '決算資料' | 'その他';
+  type: '決算' | '有報' | '有報訂正' | '四半期' | '四半期訂正' | '業績修正' | '配当修正' | 'その他';
   salesQQ: number | null; // 売QQ（%）
   operatingProfitQQ: number | null; // 営QQ（%）
   ordinaryProfitQQ: number | null; // 経QQ（%）

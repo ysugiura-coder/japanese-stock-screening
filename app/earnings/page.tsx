@@ -15,11 +15,7 @@ function shiftDate(dateStr: string, days: number): string {
   const [y, m, d] = dateStr.split('-').map(Number);
   // UTCで日付を作ることでタイムゾーンずれを回避
   const dt = new Date(Date.UTC(y, m - 1, d));
-  if (days > 0) {
-    dt.setUTCDate(dt.getUTCDate() + days);
-  } else {
-    dt.setUTCDate(dt.getUTCDate() + days);
-  }
+  dt.setUTCDate(dt.getUTCDate() + days);
   const ny = dt.getUTCFullYear();
   const nm = String(dt.getUTCMonth() + 1).padStart(2, '0');
   const nd = String(dt.getUTCDate()).padStart(2, '0');
@@ -43,30 +39,50 @@ export default function EarningsPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeSource, setActiveSource] = useState<string>('mock');
   const [warning, setWarning] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState(getTodayStr);
+  const [dateFrom, setDateFrom] = useState(getTodayStr);
+  const [dateTo, setDateTo] = useState(getTodayStr);
   const [selectedCompany, setSelectedCompany] = useState<EarningsData | null>(null);
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
-  const [filters, setFilters] = useState({
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const DATE_RANGE_STORAGE_KEY = 'earnings_date_range';
+  const FILTERS_STORAGE_KEY = 'earnings_filters';
+  const defaultFilters = {
     決算短信: true,
+    有報: true,
+    有報訂正: true,
+    四半期: true,
+    四半期訂正: true,
     業績修正: true,
-    配当修正: false,
-    決算資料: false,
-    その他: false,
-  });
+    配当修正: true,
+  };
+  const [filters, setFilters] = useState(defaultFilters);
+  const [filtersLoaded, setFiltersLoaded] = useState(false);
 
   // クライアント側キャッシュ: 日付→データ をメモリに保持（1週間分）
   const clientCache = useRef<Map<string, { earnings: EarningsData[]; source: string; fetchedAt: number }>>(new Map());
   const prefetchingRef = useRef(false);
   const lastTodayRef = useRef(getTodayStr());
 
-  // localStorage からAPIキーを読み込み
+  // localStorage からAPIキーとフィルター設定を読み込み
   useEffect(() => {
     try {
       const savedKey = localStorage.getItem(EDINET_API_KEY_STORAGE) || '';
       setEdinetApiKey(savedKey);
+      const savedFilters = localStorage.getItem(FILTERS_STORAGE_KEY);
+      if (savedFilters) {
+        setFilters({ ...defaultFilters, ...JSON.parse(savedFilters) });
+      }
+      const savedRange = localStorage.getItem(DATE_RANGE_STORAGE_KEY);
+      if (savedRange) {
+        const { from, to } = JSON.parse(savedRange);
+        if (from) setDateFrom(from);
+        if (to) setDateTo(to);
+      }
     } catch {
       // localStorage使用不可
     }
+    setFiltersLoaded(true);
   }, []);
 
   // API呼び出し（キャッシュ書き込み含む）
@@ -93,23 +109,42 @@ export default function EarningsPage() {
     return { earnings: data.earnings || [], source: data.source || 'unknown', warning: data.warning };
   }, []);
 
-  // データ取得（クライアントキャッシュ優先）
-  const fetchEarnings = useCallback(async (date: string, source: DataSource, apiKey: string, forceRefresh = false) => {
-    // クライアントキャッシュにあればそれを使う（強制リフレッシュ時は除く）
+  const MAX_RANGE_DAYS = 31;
+
+  // 日付範囲からすべての日付を生成（上限あり）
+  const getDatesInRange = useCallback((from: string, to: string): string[] => {
+    const dates: string[] = [];
+    let current = from;
+    let count = 0;
+    while (current <= to && count < MAX_RANGE_DAYS) {
+      dates.push(current);
+      current = shiftDate(current, 1);
+      count++;
+    }
+    return dates;
+  }, []);
+
+  // データ取得（範囲対応・クライアントキャッシュ優先）
+  const fetchEarningsRange = useCallback(async (from: string, to: string, source: DataSource, apiKey: string, forceRefresh = false) => {
+    const dates = getDatesInRange(from, to);
+    const today = getTodayStr();
+
+    // 全日付キャッシュ済みかチェック
     if (!forceRefresh) {
-      const cached = clientCache.current.get(`${date}:${source}`);
-      if (cached) {
-        // 当日データは1時間でキャッシュ失効、過去日付は7日間有効
-        const today = getTodayStr();
+      const allCached = dates.every((date) => {
+        const cached = clientCache.current.get(`${date}:${source}`);
+        if (!cached) return false;
         const maxAge = date < today ? 7 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
-        if (Date.now() - cached.fetchedAt < maxAge) {
-          setEarningsData(cached.earnings);
-          setActiveSource(cached.source);
-          setError(null);
-          setWarning(null);
-          setSelectedCompany(null);
-          return;
-        }
+        return Date.now() - cached.fetchedAt < maxAge;
+      });
+      if (allCached) {
+        const allData = dates.flatMap((date) => clientCache.current.get(`${date}:${source}`)!.earnings);
+        setEarningsData(allData);
+        setActiveSource(clientCache.current.get(`${dates[0]}:${source}`)?.source || 'unknown');
+        setError(null);
+        setWarning(null);
+        setSelectedCompany(null);
+        return;
       }
     }
 
@@ -119,28 +154,52 @@ export default function EarningsPage() {
     setSelectedCompany(null);
 
     try {
-      const result = await fetchFromApi(date, source, apiKey, forceRefresh);
-      // クライアントキャッシュに保存
-      clientCache.current.set(`${date}:${source}`, {
-        earnings: result.earnings,
-        source: result.source,
-        fetchedAt: Date.now(),
-      });
-      setEarningsData(result.earnings);
-      setActiveSource(result.source);
-      if (result.warning) setWarning(result.warning);
+      // 3並列ずつバッチ処理（EDINET APIの負荷を抑える）
+      const results: { earnings: EarningsData[]; source: string; warning?: string }[] = [];
+      const BATCH_SIZE = 3;
+      for (let i = 0; i < dates.length; i += BATCH_SIZE) {
+        const batch = dates.slice(i, i + BATCH_SIZE);
+        const batchResults = await Promise.all(
+          batch.map(async (date): Promise<{ earnings: EarningsData[]; source: string; warning?: string }> => {
+            // 個別キャッシュ確認
+            if (!forceRefresh) {
+              const cached = clientCache.current.get(`${date}:${source}`);
+              if (cached) {
+                const maxAge = date < today ? 7 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
+                if (Date.now() - cached.fetchedAt < maxAge) return { earnings: cached.earnings, source: cached.source };
+              }
+            }
+            const result = await fetchFromApi(date, source, apiKey, forceRefresh);
+            clientCache.current.set(`${date}:${source}`, {
+              earnings: result.earnings,
+              source: result.source,
+              fetchedAt: Date.now(),
+            });
+            return result;
+          }),
+        );
+        results.push(...batchResults);
+        // バッチ完了ごとに途中結果を表示
+        const allSoFar = results.flatMap((r) => r.earnings);
+        setEarningsData(allSoFar);
+      }
+      const allData = results.flatMap((r) => r.earnings);
+      const lastWarning = results.find((r) => r.warning)?.warning;
+      setEarningsData(allData);
+      setActiveSource(results[0]?.source || 'unknown');
+      if (lastWarning) setWarning(lastWarning);
     } catch (err) {
       console.error('Earnings fetch error:', err);
       setError(err instanceof Error ? err.message : String(err));
       const mockData = mockEarningsData
-        .filter((d) => d.date === date)
+        .filter((d) => d.date >= from && d.date <= to)
         .map((d) => ({ ...d, dataSource: 'mock' as const }));
       setEarningsData(mockData);
       setActiveSource('mock');
     } finally {
       setLoading(false);
     }
-  }, [fetchFromApi]);
+  }, [fetchFromApi, getDatesInRange]);
 
   // 1週間分をバックグラウンドでプリフェッチ
   const prefetchWeek = useCallback(async (source: DataSource, apiKey: string) => {
@@ -177,10 +236,31 @@ export default function EarningsPage() {
     prefetchingRef.current = false;
   }, [fetchFromApi]);
 
-  // 日付・ソース・APIキー変更時にデータ取得
+  // フィルター変更時にlocalStorageへ保存
   useEffect(() => {
-    fetchEarnings(selectedDate, dataSource, edinetApiKey);
-  }, [selectedDate, dataSource, edinetApiKey, fetchEarnings]);
+    if (!filtersLoaded) return;
+    try {
+      localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(filters));
+    } catch {
+      // localStorage使用不可
+    }
+  }, [filters, filtersLoaded]);
+
+  // 日付範囲変更時にlocalStorageへ保存
+  useEffect(() => {
+    if (!filtersLoaded) return;
+    try {
+      localStorage.setItem(DATE_RANGE_STORAGE_KEY, JSON.stringify({ from: dateFrom, to: dateTo }));
+    } catch {
+      // localStorage使用不可
+    }
+  }, [dateFrom, dateTo, filtersLoaded]);
+
+  // 日付範囲・ソース・APIキー変更時にデータ取得
+  useEffect(() => {
+    if (!filtersLoaded) return;
+    fetchEarningsRange(dateFrom, dateTo, dataSource, edinetApiKey);
+  }, [dateFrom, dateTo, dataSource, edinetApiKey, fetchEarningsRange, filtersLoaded]);
 
   // 初回マウント時に1週間分プリフェッチ
   useEffect(() => {
@@ -195,50 +275,61 @@ export default function EarningsPage() {
       const now = getTodayStr();
       if (now !== lastTodayRef.current) {
         lastTodayRef.current = now;
-        // 当日のキャッシュをクリア
         for (const key of clientCache.current.keys()) {
           if (key.startsWith(now + ':')) {
             clientCache.current.delete(key);
           }
         }
-        // 表示中の日付が昨日の「今日」なら自動で今日に切り替え
-        setSelectedDate((prev) => {
-          if (prev === shiftDate(now, -1)) return now;
-          return prev;
-        });
-        // 1週間分を再プリフェッチ
         prefetchWeek(dataSource, edinetApiKey);
       }
     };
-
-    // 30秒ごとに日付変更をチェック
     const interval = setInterval(checkDateChange, 30000);
     return () => clearInterval(interval);
   }, [dataSource, edinetApiKey, prefetchWeek]);
 
   // =========== 日付操作 ===========
+  const rangeSpan = useCallback(() => {
+    // 現在の範囲の日数を計算
+    const fromDt = new Date(dateFrom);
+    const toDt = new Date(dateTo);
+    return Math.max(1, Math.round((toDt.getTime() - fromDt.getTime()) / (24 * 60 * 60 * 1000)) + 1);
+  }, [dateFrom, dateTo]);
+
   const goToPrevDate = useCallback(() => {
-    setSelectedDate((prev) => shiftDate(prev, -1));
-  }, []);
+    const span = rangeSpan();
+    setDateFrom((prev) => shiftDate(prev, -span));
+    setDateTo((prev) => shiftDate(prev, -span));
+  }, [rangeSpan]);
 
   const goToNextDate = useCallback(() => {
-    setSelectedDate((prev) => shiftDate(prev, 1));
-  }, []);
+    const span = rangeSpan();
+    setDateFrom((prev) => shiftDate(prev, span));
+    setDateTo((prev) => shiftDate(prev, span));
+  }, [rangeSpan]);
 
   const goToToday = useCallback(() => {
-    setSelectedDate(getTodayStr());
+    const today = getTodayStr();
+    setDateFrom(today);
+    setDateTo(today);
   }, []);
 
   // =========== フィルタ & ソート ===========
   const filteredData = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
     return earningsData.filter((item) => {
-      if (item.type === '決算') return filters.決算短信;
-      if (item.type === '業績修正') return filters.業績修正;
-      if (item.type === '配当修正') return filters.配当修正;
-      if (item.type === '決算資料') return filters.決算資料;
-      return filters.その他;
+      // 種別フィルター
+      if (item.type === '決算' && !filters.決算短信) return false;
+      if (item.type === '有報' && !filters.有報) return false;
+      if (item.type === '有報訂正' && !filters.有報訂正) return false;
+      if (item.type === '四半期' && !filters.四半期) return false;
+      if (item.type === '四半期訂正' && !filters.四半期訂正) return false;
+      if (item.type === '業績修正' && !filters.業績修正) return false;
+      if (item.type === '配当修正' && !filters.配当修正) return false;
+      // テキスト検索
+      if (q && !item.code.toLowerCase().includes(q) && !item.companyName.toLowerCase().includes(q)) return false;
+      return true;
     });
-  }, [earningsData, filters]);
+  }, [earningsData, filters, searchQuery]);
 
   const sortedData = useMemo(() => {
     if (!sortConfig) return filteredData;
@@ -271,14 +362,22 @@ export default function EarningsPage() {
         return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-gray-600 text-white whitespace-nowrap">決算</span>;
       case '業績修正':
         return (
-          <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap bg-yellow-500/20 text-yellow-400">
+          <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap ${
+            salesYY && salesYY > 0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+          }`}>
             修正{salesYY && salesYY > 0 ? '↑' : '↓'}
           </span>
         );
+      case '有報':
+        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400 whitespace-nowrap">有報</span>;
+      case '有報訂正':
+        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-orange-400 whitespace-nowrap">有報訂正</span>;
+      case '四半期':
+        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-cyan-500/20 text-cyan-400 whitespace-nowrap">四半期</span>;
+      case '四半期訂正':
+        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-cyan-500/20 text-orange-400 whitespace-nowrap">四半期訂正</span>;
       case '配当修正':
         return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-400 whitespace-nowrap">配当</span>;
-      case '決算資料':
-        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400 whitespace-nowrap">資料</span>;
       default:
         return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-gray-500/20 text-gray-400 whitespace-nowrap">他</span>;
     }
@@ -339,75 +438,185 @@ export default function EarningsPage() {
     { key: 'netProfitCon', label: '利Con' },
   ];
 
+  // 種別ごとの件数
+  const typeCounts = useMemo(() => {
+    const counts = { 決算: 0, 有報: 0, 有報訂正: 0, 四半期: 0, 四半期訂正: 0, 業績修正: 0, 配当修正: 0 };
+    for (const item of earningsData) {
+      if (item.type === '決算') counts.決算++;
+      else if (item.type === '有報') counts.有報++;
+      else if (item.type === '有報訂正') counts.有報訂正++;
+      else if (item.type === '四半期') counts.四半期++;
+      else if (item.type === '四半期訂正') counts.四半期訂正++;
+      else if (item.type === '業績修正') counts.業績修正++;
+      else if (item.type === '配当修正') counts.配当修正++;
+    }
+    return counts;
+  }, [earningsData]);
+
+  const filterKeyToType: Record<string, keyof typeof typeCounts> = {
+    決算短信: '決算',
+    有報: '有報',
+    有報訂正: '有報訂正',
+    四半期: '四半期',
+    四半期訂正: '四半期訂正',
+    業績修正: '業績修正',
+    配当修正: '配当修正',
+  };
+
+  // サマリー統計
+  const summary = useMemo(() => {
+    let 増益 = 0, 減益 = 0, 上方修正 = 0, 下方修正 = 0;
+    for (const item of filteredData) {
+      if (item.type === '決算') {
+        if (item.netProfitYY !== null && item.netProfitYY > 0) 増益++;
+        else if (item.netProfitYY !== null && item.netProfitYY < 0) 減益++;
+      } else if (item.type === '業績修正') {
+        if (item.salesYY !== null && item.salesYY > 0) 上方修正++;
+        else if (item.salesYY !== null && item.salesYY < 0) 下方修正++;
+      }
+    }
+    return { 増益, 減益, 上方修正, 下方修正 };
+  }, [filteredData]);
+
+  // キーボードショートカット
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // input/selectにフォーカス中はスキップ
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        goToPrevDate();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        goToNextDate();
+      } else if (e.key === 'Escape') {
+        setSelectedCompany(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [goToPrevDate, goToNextDate]);
+
+  // 外部リンク生成
+  const getExternalLinks = (code: string) => [
+    { label: '株探', url: `https://kabutan.jp/stock/finance?code=${code}` },
+    { label: 'IR BANK', url: `https://irbank.net/${code}` },
+    { label: 'Yahoo', url: `https://finance.yahoo.co.jp/quote/${code}.T` },
+  ];
+
   return (
     <div className="min-h-screen bg-gray-900 text-white">
-      <div className="max-w-7xl mx-auto px-4 py-8">
+      <div className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-8">
         {/* ヘッダー */}
-        <div className="mb-6">
-          <div className="flex justify-between items-center mb-4">
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold">決算分析リアルタイムビューア</h1>
-            </div>
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={goToPrevDate} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">
-                ◀ 前日
+        <div className="mb-4 sm:mb-6">
+          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-4">
+            <h1 className="text-xl sm:text-2xl font-bold">決算分析ビューア</h1>
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+              <button type="button" onClick={goToPrevDate} className="px-2 sm:px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm min-w-[44px]">
+                ◀
               </button>
               <input
                 type="date"
-                value={selectedDate}
+                value={dateFrom}
                 onChange={(e) => {
-                  if (e.target.value) setSelectedDate(e.target.value);
+                  if (e.target.value) {
+                    setDateFrom(e.target.value);
+                    if (e.target.value > dateTo) setDateTo(e.target.value);
+                  }
                 }}
-                className="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white [color-scheme:dark]"
+                className="px-1.5 sm:px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white [color-scheme:dark] min-w-0"
               />
-              <button type="button" onClick={goToNextDate} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">
-                翌日 ▶
+              <span className="text-gray-400 text-sm">〜</span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    setDateTo(e.target.value);
+                    if (e.target.value < dateFrom) setDateFrom(e.target.value);
+                  }
+                }}
+                className="px-1.5 sm:px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white [color-scheme:dark] min-w-0"
+              />
+              <button type="button" onClick={goToNextDate} className="px-2 sm:px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm min-w-[44px]">
+                ▶
               </button>
-              <button type="button" onClick={goToToday} className="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-sm">
+              <button type="button" onClick={goToToday} className="px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm whitespace-nowrap">
                 今日
               </button>
               <button
                 type="button"
-                onClick={() => fetchEarnings(selectedDate, dataSource, edinetApiKey, true)}
+                onClick={() => fetchEarningsRange(dateFrom, dateTo, dataSource, edinetApiKey, true)}
                 disabled={loading}
-                className="px-3 py-1 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 rounded text-sm"
+                className="px-2 sm:px-3 py-1.5 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 rounded text-sm whitespace-nowrap"
               >
-                {loading ? '取得中...' : '更新'}
+                {loading ? '...' : '更新'}
               </button>
             </div>
           </div>
 
-          {/* データソース切替 & フィルター */}
-          <div className="flex flex-wrap items-center gap-4 mb-4">
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-400">ソース:</span>
-              <select
-                value={dataSource}
-                onChange={(e) => setDataSource(e.target.value as DataSource)}
-                className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white"
-              >
-                <option value="auto">自動（EDINET優先）</option>
-                <option value="edinet">EDINET</option>
-                <option value="mock">モックデータ</option>
-              </select>
-            </div>
-            <div className="h-4 w-px bg-gray-600" />
-            <span className="text-sm text-gray-400">フィルター:</span>
-            {Object.entries(filters).map(([key, value]) => (
-              <label key={key} className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={value}
-                  onChange={(e) => setFilters({ ...filters, [key]: e.target.checked })}
-                  className="w-4 h-4"
-                />
-                <span className="text-sm">{key}</span>
-              </label>
-            ))}
-            <span className="text-xs text-gray-400 ml-auto">
-              ({filteredData.length}件表示 / {earningsData.length}件取得)
+          {/* 検索 & データソース */}
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-2">
+            <input
+              type="text"
+              placeholder="コード / 企業名で検索"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="px-2.5 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white placeholder-gray-500 w-40 sm:w-52"
+            />
+            <select
+              value={dataSource}
+              onChange={(e) => setDataSource(e.target.value as DataSource)}
+              className="px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white"
+            >
+              <option value="auto">自動（EDINET優先）</option>
+              <option value="edinet">EDINET</option>
+              <option value="mock">モックデータ</option>
+            </select>
+            <span className="text-xs text-gray-400 ml-auto whitespace-nowrap">
+              {filteredData.length}/{earningsData.length}件
             </span>
           </div>
+
+          {/* フィルター */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mb-3">
+            {Object.entries(filters).map(([key, value]) => {
+              const typeKey = filterKeyToType[key];
+              const count = typeKey ? typeCounts[typeKey] : 0;
+              return (
+                <label key={key} className={`flex items-center gap-1.5 cursor-pointer ${count === 0 ? 'opacity-50' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={value}
+                    onChange={(e) => setFilters({ ...filters, [key]: e.target.checked })}
+                    className="w-3.5 h-3.5"
+                  />
+                  <span className="text-xs sm:text-sm">{key}</span>
+                  <span className="text-xs text-gray-500">({count})</span>
+                </label>
+              );
+            })}
+          </div>
+
+          {/* サマリーバー */}
+          {filteredData.length > 0 && (
+            <div className="flex flex-wrap gap-3 sm:gap-4 mb-4 text-xs">
+              {summary.増益 > 0 && (
+                <span className="px-2 py-1 rounded bg-green-500/15 text-green-400">増益 {summary.増益}社</span>
+              )}
+              {summary.減益 > 0 && (
+                <span className="px-2 py-1 rounded bg-red-500/15 text-red-400">減益 {summary.減益}社</span>
+              )}
+              {summary.上方修正 > 0 && (
+                <span className="px-2 py-1 rounded bg-emerald-500/15 text-emerald-400">上方修正 {summary.上方修正}社</span>
+              )}
+              {summary.下方修正 > 0 && (
+                <span className="px-2 py-1 rounded bg-orange-500/15 text-orange-400">下方修正 {summary.下方修正}社</span>
+              )}
+            </div>
+          )}
 
           {/* 警告・エラー */}
           {warning && (
@@ -425,168 +634,341 @@ export default function EarningsPage() {
           {!edinetApiKey && dataSource !== 'mock' && (
             <div className="bg-blue-900/30 border border-blue-600/50 rounded-lg px-4 py-3 mb-4">
               <p className="text-sm text-blue-300 mb-1">
-                EDINET APIキーを設定すると、有価証券報告書・四半期報告書・決算短信の実データを表示できます。
+                EDINET APIキーを設定すると、決算短信の実データを表示できます。
               </p>
               <p className="text-xs text-blue-400">
-                <a href="/settings" className="underline hover:text-blue-200">設定ページ</a>でEDINET APIキーを登録してください（無料）。
-                現在はモックデータを表示しています。
+                <a href="/settings" className="underline hover:text-blue-200">設定ページ</a>でAPIキーを登録してください（無料）。
               </p>
             </div>
           )}
         </div>
 
-        {/* メインテーブル */}
-        <div className="bg-gray-800 rounded-lg overflow-hidden mb-6">
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400" />
-              <span className="ml-3 text-gray-400">データを取得中...</span>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-700">
-                  <tr>
-                    <th className="px-3 py-2 text-left text-xs font-medium uppercase">日付</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium uppercase">時刻</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium uppercase">コード / 企業名</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium uppercase">種別</th>
-                    {numericColumns.map((col) => (
-                      <th key={col.key} onClick={() => handleSort(col.key)} className={sortableThClass}>
-                        {col.label}{sortIcon(col.key)}
-                      </th>
-                    ))}
-                    <th className="px-3 py-2 text-left text-xs font-medium uppercase">情報</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-700">
-                  {sortedData.length === 0 ? (
+        {/* ローディング */}
+        {loading ? (
+          <div className="bg-gray-800 rounded-lg flex items-center justify-center py-12 mb-6">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400" />
+            <span className="ml-3 text-gray-400">データを取得中...</span>
+          </div>
+        ) : (
+          <>
+            {/* デスクトップ: テーブル表示 */}
+            <div className="hidden md:block bg-gray-800 rounded-lg overflow-hidden mb-6">
+              <div className="overflow-x-auto max-h-[70vh]">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-700 sticky top-0 z-10">
                     <tr>
-                      <td colSpan={17} className="px-3 py-8 text-center text-gray-400">
-                        {earningsData.length === 0 ? 'この日付のデータはありません' : 'フィルター条件に一致するデータがありません'}
-                      </td>
+                      {dateFrom !== dateTo && (
+                        <th className="px-3 py-2 text-left text-xs font-medium uppercase">日付</th>
+                      )}
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase">時刻</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase">コード / 企業名</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase">種別</th>
+                      {numericColumns.map((col) => (
+                        <th key={col.key} onClick={() => handleSort(col.key)} className={sortableThClass}>
+                          {col.label}{sortIcon(col.key)}
+                        </th>
+                      ))}
+                      <th className="px-3 py-2 text-left text-xs font-medium uppercase">情報</th>
                     </tr>
-                  ) : (
-                    sortedData.map((data, index) => (
-                      <tr
-                        key={`${data.code}-${data.date}-${index}`}
-                        onClick={() => setSelectedCompany(data)}
-                        className={`hover:bg-gray-700/50 cursor-pointer ${
-                          selectedCompany?.code === data.code && selectedCompany?.date === data.date ? 'bg-blue-900/30' : ''
-                        }`}
-                      >
-                        <td className="px-3 py-2 text-gray-400">{formatDateShort(data.date)}</td>
-                        <td className="px-3 py-2">{data.time}</td>
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          <span className="text-gray-400">{data.code}</span>{' '}
-                          <span>{data.companyName}</span>
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-1">
-                            {getTypeBadge(data.type, data.salesYY)}
-                            {getSourceBadge(data.dataSource)}
-                          </div>
-                        </td>
-                        {numericColumns.map((col) => {
-                          const val = data[col.key as keyof EarningsData] as number | null;
-                          return (
-                            <td key={col.key} className="px-3 py-2">
-                              {val !== null && val !== undefined ? (
-                                <span className={val >= 0 ? 'text-green-400' : 'text-red-400'}>
-                                  {formatPercent(val)}
-                                </span>
-                              ) : '-'}
-                            </td>
-                          );
-                        })}
-                        <td className="px-3 py-2 text-xs">
-                          <div className="flex items-center gap-2">
-                            {data.dividend !== null && data.dividend !== undefined && (
-                              <span>
-                                合計{data.dividend.toFixed(2)}円
-                                {data.dividendChange !== null && data.dividendChange !== undefined && ` 前期比${formatPercent(data.dividendChange)}`}
-                              </span>
-                            )}
-                            {data.edinetDocId && (
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); openEdinetDoc(data.edinetDocId); }}
-                                className="text-blue-400 hover:text-blue-300 underline"
-                              >
-                                EDINET
-                              </button>
-                            )}
-                          </div>
+                  </thead>
+                  <tbody className="divide-y divide-gray-700">
+                    {sortedData.length === 0 ? (
+                      <tr>
+                        <td colSpan={dateFrom !== dateTo ? 17 : 16} className="px-3 py-8 text-center text-gray-400">
+                          {earningsData.length === 0 ? 'この日付のデータはありません' : 'フィルター条件に一致するデータがありません'}
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    ) : (
+                      sortedData.map((data, index) => (
+                        <tr
+                          key={`${data.code}-${data.date}-${index}`}
+                          onClick={() => setSelectedCompany(data)}
+                          className={`hover:bg-gray-700/50 cursor-pointer ${
+                            selectedCompany?.code === data.code && selectedCompany?.date === data.date ? 'bg-blue-900/30' : ''
+                          }`}
+                        >
+                          {dateFrom !== dateTo && (
+                            <td className="px-3 py-2 text-gray-400 whitespace-nowrap">{formatDateShort(data.date)}</td>
+                          )}
+                          <td className="px-3 py-2 text-gray-400 whitespace-nowrap">{data.time}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            <span className="text-gray-400">{data.code}</span>{' '}
+                            <span>{data.companyName}</span>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-1">
+                              {getTypeBadge(data.type, data.salesYY)}
+                              {getSourceBadge(data.dataSource)}
+                            </div>
+                          </td>
+                          {numericColumns.map((col) => {
+                            const val = data[col.key as keyof EarningsData] as number | null;
+                            return (
+                              <td key={col.key} className="px-3 py-2">
+                                {val !== null && val !== undefined ? (
+                                  <span className={val >= 0 ? 'text-green-400' : 'text-red-400'}>
+                                    {formatPercent(val)}
+                                  </span>
+                                ) : '-'}
+                              </td>
+                            );
+                          })}
+                          <td className="px-3 py-2 text-xs">
+                            <div className="flex items-center gap-2">
+                              {data.dividend !== null && data.dividend !== undefined && (
+                                <span>
+                                  配当{data.dividend.toFixed(1)}円
+                                  {data.dividendChange !== null && data.dividendChange !== undefined && (
+                                    <span className={data.dividendChange >= 0 ? ' text-green-400' : ' text-red-400'}>
+                                      ({formatPercent(data.dividendChange)})
+                                    </span>
+                                  )}
+                                </span>
+                              )}
+                              {data.edinetDocId && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); openEdinetDoc(data.edinetDocId); }}
+                                  className="text-blue-400 hover:text-blue-300 underline"
+                                >
+                                  PDF
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          )}
-        </div>
+
+            {/* モバイル: ソート切替 */}
+            <div className="md:hidden flex items-center gap-2 mb-2">
+              <span className="text-xs text-gray-400">並替:</span>
+              {[
+                { key: 'salesYY', label: '売YY' },
+                { key: 'operatingProfitYY', label: '営YY' },
+                { key: 'netProfitYY', label: '利YY' },
+              ].map((col) => (
+                <button
+                  key={col.key}
+                  type="button"
+                  onClick={() => handleSort(col.key)}
+                  className={`px-2 py-1 rounded text-xs ${
+                    sortConfig?.key === col.key
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                >
+                  {col.label}{sortConfig?.key === col.key ? (sortConfig.direction === 'asc' ? '▲' : '▼') : ''}
+                </button>
+              ))}
+              {sortConfig && (
+                <button
+                  type="button"
+                  onClick={() => setSortConfig(null)}
+                  className="px-2 py-1 rounded text-xs bg-gray-700 text-gray-400 hover:bg-gray-600"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* モバイル: カード表示 */}
+            <div className="md:hidden space-y-2 mb-6">
+              {sortedData.length === 0 ? (
+                <div className="bg-gray-800 rounded-lg px-4 py-8 text-center text-gray-400">
+                  {earningsData.length === 0 ? 'この日付のデータはありません' : 'フィルター条件に一致するデータがありません'}
+                </div>
+              ) : (
+                sortedData.map((data, index) => (
+                  <div
+                    key={`m-${data.code}-${data.date}-${index}`}
+                    onClick={() => setSelectedCompany(data)}
+                    className={`bg-gray-800 rounded-lg p-3 cursor-pointer active:bg-gray-700 ${
+                      selectedCompany?.code === data.code && selectedCompany?.date === data.date ? 'ring-1 ring-blue-500' : ''
+                    }`}
+                  >
+                    {/* 1行目: 企業情報 */}
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {getTypeBadge(data.type, data.salesYY)}
+                        <span className="text-gray-400 text-xs">{data.code}</span>
+                        <span className="text-sm font-medium truncate">{data.companyName}</span>
+                      </div>
+                      <span className="text-xs text-gray-500 shrink-0 ml-2">
+                        {dateFrom !== dateTo && `${formatDateShort(data.date)} `}{data.time}
+                      </span>
+                    </div>
+                    {/* 2行目: YoY指標 */}
+                    <div className="grid grid-cols-4 gap-1 text-xs">
+                      {[
+                        { label: '売YY', val: data.salesYY },
+                        { label: '営YY', val: data.operatingProfitYY },
+                        { label: '経YY', val: data.ordinaryProfitYY },
+                        { label: '利YY', val: data.netProfitYY },
+                      ].map((col) => (
+                        <div key={col.label} className="text-center">
+                          <div className="text-gray-500">{col.label}</div>
+                          <div className={col.val !== null && col.val !== undefined
+                            ? (col.val >= 0 ? 'text-green-400 font-medium' : 'text-red-400 font-medium')
+                            : 'text-gray-600'
+                          }>
+                            {col.val !== null && col.val !== undefined ? formatPercent(col.val) : '-'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {/* 3行目: QoQ指標（値がある場合のみ） */}
+                    {(data.salesQQ !== null || data.operatingProfitQQ !== null || data.ordinaryProfitQQ !== null || data.netProfitQQ !== null) && (
+                      <div className="grid grid-cols-4 gap-1 text-xs mt-1">
+                        {[
+                          { label: '売QQ', val: data.salesQQ },
+                          { label: '営QQ', val: data.operatingProfitQQ },
+                          { label: '経QQ', val: data.ordinaryProfitQQ },
+                          { label: '利QQ', val: data.netProfitQQ },
+                        ].map((col) => (
+                          <div key={col.label} className="text-center">
+                            <div className="text-gray-500">{col.label}</div>
+                            <div className={col.val !== null && col.val !== undefined
+                              ? (col.val >= 0 ? 'text-green-400 font-medium' : 'text-red-400 font-medium')
+                              : 'text-gray-600'
+                            }>
+                              {col.val !== null && col.val !== undefined ? formatPercent(col.val) : '-'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* 配当情報 */}
+                    {data.dividend !== null && data.dividend !== undefined && (
+                      <div className="mt-1.5 text-xs text-gray-400">
+                        配当 {data.dividend.toFixed(1)}円
+                        {data.dividendChange !== null && data.dividendChange !== undefined && (
+                          <span className={data.dividendChange >= 0 ? ' text-green-400' : ' text-red-400'}>
+                            ({formatPercent(data.dividendChange)})
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        )}
 
         {/* 詳細パネル */}
         {selectedCompany && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-gray-800 rounded-lg p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <h2 className="text-xl font-bold">
-                  [{selectedCompany.type}] {selectedCompany.code} {selectedCompany.companyName}
-                </h2>
-                {getSourceBadge(selectedCompany.dataSource)}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+            <div className="bg-gray-800 rounded-lg p-4 sm:p-6">
+              <div className="flex items-start justify-between gap-2 mb-4">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {getTypeBadge(selectedCompany.type, selectedCompany.salesYY)}
+                  <h2 className="text-lg sm:text-xl font-bold">
+                    {selectedCompany.code} {selectedCompany.companyName}
+                  </h2>
+                  {getSourceBadge(selectedCompany.dataSource)}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedCompany(null)}
+                  className="text-gray-400 hover:text-white text-lg shrink-0"
+                  aria-label="閉じる"
+                >
+                  ✕
+                </button>
               </div>
               <div className="space-y-4">
                 {selectedCompany.edinetDocDescription && (
                   <div className="bg-gray-700/50 rounded p-3 text-sm">
                     <span className="text-gray-400">書類: </span>
                     <span>{selectedCompany.edinetDocDescription}</span>
-                    {selectedCompany.edinetDocId && (
-                      <button type="button" onClick={() => openEdinetDoc(selectedCompany.edinetDocId)} className="ml-2 text-blue-400 hover:text-blue-300 underline">
-                        EDINETで確認
-                      </button>
-                    )}
                   </div>
                 )}
                 <div>
-                  <h3 className="font-semibold mb-2">【業績（YoY / QoQ）】</h3>
-                  <div className="space-y-2 text-sm">
+                  <h3 className="font-semibold mb-2 text-sm text-gray-300">業績（YoY / QoQ）</h3>
+                  <div className="space-y-1.5 text-sm">
                     {[
                       { label: '売上高', yy: selectedCompany.salesYY, qq: selectedCompany.salesQQ },
                       { label: '営業利益', yy: selectedCompany.operatingProfitYY, qq: selectedCompany.operatingProfitQQ },
                       { label: '経常利益', yy: selectedCompany.ordinaryProfitYY, qq: selectedCompany.ordinaryProfitQQ },
                       { label: '純利益', yy: selectedCompany.netProfitYY, qq: selectedCompany.netProfitQQ },
                     ].map((row) => (
-                      <div key={row.label} className="flex justify-between">
-                        <span>{row.label}:</span>
-                        <span>
-                          YoY {row.yy !== null ? formatPercent(row.yy) : '-'} / QoQ {row.qq !== null ? formatPercent(row.qq) : '-'}
-                        </span>
+                      <div key={row.label} className="flex justify-between items-center">
+                        <span className="text-gray-400">{row.label}</span>
+                        <div className="flex gap-4">
+                          <span className="w-20 text-right">
+                            {row.yy !== null && row.yy !== undefined ? (
+                              <span className={row.yy >= 0 ? 'text-green-400' : 'text-red-400'}>{formatPercent(row.yy)}</span>
+                            ) : <span className="text-gray-600">-</span>}
+                          </span>
+                          <span className="w-20 text-right">
+                            {row.qq !== null && row.qq !== undefined ? (
+                              <span className={row.qq >= 0 ? 'text-green-400' : 'text-red-400'}>{formatPercent(row.qq)}</span>
+                            ) : <span className="text-gray-600">-</span>}
+                          </span>
+                        </div>
                       </div>
                     ))}
+                    <div className="flex justify-end gap-4 text-xs text-gray-500 border-t border-gray-700 pt-1">
+                      <span className="w-20 text-right">YoY</span>
+                      <span className="w-20 text-right">QoQ</span>
+                    </div>
                   </div>
                 </div>
                 <div>
-                  <h3 className="font-semibold mb-2">【配当】</h3>
+                  <h3 className="font-semibold mb-2 text-sm text-gray-300">配当</h3>
                   <div className="text-sm">
                     {selectedCompany.dividend !== null && selectedCompany.dividend !== undefined ? (
                       <span>
-                        配当 {selectedCompany.dividend.toFixed(2)}円
-                        {selectedCompany.dividendChange !== null && selectedCompany.dividendChange !== undefined && ` / 前期比${formatPercent(selectedCompany.dividendChange)}`}
+                        {selectedCompany.dividend.toFixed(2)}円
+                        {selectedCompany.dividendChange !== null && selectedCompany.dividendChange !== undefined && (
+                          <span className={selectedCompany.dividendChange >= 0 ? ' text-green-400' : ' text-red-400'}>
+                            （前期比 {formatPercent(selectedCompany.dividendChange)}）
+                          </span>
+                        )}
                       </span>
                     ) : (
-                      <span className="text-gray-400">配当情報なし</span>
+                      <span className="text-gray-500">情報なし</span>
                     )}
+                  </div>
+                </div>
+                {/* 外部リンク */}
+                <div>
+                  <h3 className="font-semibold mb-2 text-sm text-gray-300">外部リンク</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedCompany.edinetDocId && (
+                      <button
+                        type="button"
+                        onClick={() => openEdinetDoc(selectedCompany.edinetDocId)}
+                        className="px-3 py-1.5 bg-green-700 hover:bg-green-600 rounded text-xs font-medium"
+                      >
+                        EDINET PDF
+                      </button>
+                    )}
+                    {getExternalLinks(selectedCompany.code).map((link) => (
+                      <a
+                        key={link.label}
+                        href={link.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium"
+                      >
+                        {link.label}
+                      </a>
+                    ))}
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="bg-gray-800 rounded-lg p-6">
+            <div className="bg-gray-800 rounded-lg p-4 sm:p-6">
               {selectedCompany.segments ? (
                 <>
-                  <h2 className="text-xl font-bold mb-4">セグメント別業績 ({selectedCompany.segments.period})</h2>
+                  <h2 className="text-lg sm:text-xl font-bold mb-4">セグメント別業績 ({selectedCompany.segments.period})</h2>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead className="bg-gray-700">
@@ -606,8 +988,8 @@ export default function EarningsPage() {
                             return (
                               <tr key={idx} className={isHighlight ? 'bg-yellow-900/20' : ''}>
                                 <td className="px-3 py-2">{seg.name}</td>
-                                <td className="px-3 py-2 text-right">{(seg.sales / 1000000).toFixed(0)}百万</td>
-                                <td className="px-3 py-2 text-right">{(seg.profit / 1000000).toFixed(0)}百万</td>
+                                <td className="px-3 py-2 text-right">{(seg.sales / 1000000).toFixed(0)}</td>
+                                <td className="px-3 py-2 text-right">{(seg.profit / 1000000).toFixed(0)}</td>
                                 <td className="px-3 py-2 text-right">
                                   {seg.salesYoY != null ? (
                                     <span className={seg.salesYoY >= 0 ? 'text-green-400' : 'text-red-400'}>{formatPercent(seg.salesYoY)}</span>
@@ -629,19 +1011,12 @@ export default function EarningsPage() {
                 </>
               ) : (
                 <div>
-                  <h2 className="text-xl font-bold mb-4">書類情報</h2>
+                  <h2 className="text-lg sm:text-xl font-bold mb-4">書類情報</h2>
                   <div className="space-y-3 text-sm">
                     {selectedCompany.edinetDocDescription && (
                       <div><span className="text-gray-400">書類種別: </span>{selectedCompany.edinetDocDescription}</div>
                     )}
                     <div><span className="text-gray-400">提出日時: </span>{selectedCompany.date} {selectedCompany.time}</div>
-                    {selectedCompany.edinetDocId && (
-                      <div className="pt-2">
-                        <button type="button" onClick={() => openEdinetDoc(selectedCompany.edinetDocId)} className="inline-block px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm">
-                          EDINETで書類を確認
-                        </button>
-                      </div>
-                    )}
                   </div>
                 </div>
               )}

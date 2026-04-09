@@ -87,6 +87,10 @@ interface FinancialSummary {
 // ========== 書類一覧取得 ==========
 
 const KESSAN_PATTERN = /決算短信/;
+const TEISEI_YUHO_PATTERN = /訂正有価証券報告書/;
+const YUHO_PATTERN = /有価証券報告書/;
+const TEISEI_SHIHANKI_PATTERN = /訂正四半期報告書/;
+const SHIHANKI_PATTERN = /四半期報告書/;
 const GYOSEKI_PATTERN = /業績予想.*修正|修正.*業績予想/;
 const HAITO_PATTERN = /配当予想.*修正|修正.*配当予想/;
 
@@ -115,9 +119,10 @@ export function filterEarningsDocuments(docs: EdinetDocument[]): EdinetDocument[
     if (d.withdrawalStatus === '1') return false;
     const desc = d.docDescription || '';
     if (KESSAN_PATTERN.test(desc)) return true;
+    if (YUHO_PATTERN.test(desc)) return true;   // 訂正有報も含む
+    if (SHIHANKI_PATTERN.test(desc)) return true; // 訂正四半期も含む
     if (GYOSEKI_PATTERN.test(desc)) return true;
     if (HAITO_PATTERN.test(desc)) return true;
-    if (['120', '130', '140'].includes(d.docTypeCode)) return true;
     return false;
   });
 }
@@ -400,7 +405,11 @@ export function mapDocumentToEarnings(
   const secCode = doc.secCode ? doc.secCode.substring(0, 4) : '';
 
   let type: EarningsData['type'] = 'その他';
-  if (KESSAN_PATTERN.test(desc) || ['120', '130', '140'].includes(doc.docTypeCode)) type = '決算';
+  if (KESSAN_PATTERN.test(desc)) type = '決算';
+  else if (TEISEI_YUHO_PATTERN.test(desc)) type = '有報訂正';
+  else if (YUHO_PATTERN.test(desc)) type = '有報';
+  else if (TEISEI_SHIHANKI_PATTERN.test(desc)) type = '四半期訂正';
+  else if (SHIHANKI_PATTERN.test(desc)) type = '四半期';
   else if (GYOSEKI_PATTERN.test(desc)) type = '業績修正';
   else if (HAITO_PATTERN.test(desc)) type = '配当修正';
 
