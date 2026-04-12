@@ -1,14 +1,48 @@
 'use client';
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { EarningsData } from '@/lib/types/financial';
+import { Stock, StocksResponse } from '@/lib/types/stock';
 import { mockEarningsData } from '@/lib/data/mock-earnings';
-import { formatPercent } from '@/lib/utils/format';
+import { formatPercent, formatMarketCap, convertToCSV } from '@/lib/utils/format';
+import { isListedCompany } from '@/lib/utils/screening';
+import { getFavorites } from '@/lib/utils/favorites';
 
 type SortConfig = { key: string; direction: 'asc' | 'desc' } | null;
 type DataSource = 'auto' | 'edinet' | 'mock';
+type QuickFilter =
+  | 'all'
+  | 'increase'
+  | 'decrease'
+  | 'upwardRevision'
+  | 'downwardRevision'
+  | 'beatConsensus'
+  | 'dividendUp';
 
 const EDINET_API_KEY_STORAGE = 'edinet_api_key';
+const ADV_FILTERS_STORAGE_KEY = 'earnings_adv_filters';
+
+/** /api/stocks から上場銘柄ユニバースを取得（認証ヘッダ付き） */
+async function fetchStockUniverse(): Promise<StocksResponse> {
+  const headers: HeadersInit = {};
+  if (typeof window !== 'undefined') {
+    const email = localStorage.getItem('jquants_email') || '';
+    const password = localStorage.getItem('jquants_password') || '';
+    const apiKey = localStorage.getItem('jquants_api_key') || '';
+    const apiBase = localStorage.getItem('jquants_api_base') || '';
+    if (email && password) {
+      (headers as Record<string, string>)['x-jquants-email'] = email;
+      (headers as Record<string, string>)['x-jquants-password'] = password;
+    } else if (apiKey) {
+      (headers as Record<string, string>)['x-jquants-api-key'] = apiKey;
+    }
+    if (apiBase) (headers as Record<string, string>)['x-api-base'] = apiBase;
+  }
+  const res = await fetch('/api/stocks', { headers });
+  if (!res.ok) throw new Error('Failed to fetch stock universe');
+  return res.json();
+}
 
 /** YYYY-MM-DD 文字列を安全に1日進める / 戻す（タイムゾーン非依存） */
 function shiftDate(dateStr: string, days: number): string {
@@ -59,6 +93,40 @@ export default function EarningsPage() {
   const [filters, setFilters] = useState(defaultFilters);
   const [filtersLoaded, setFiltersLoaded] = useState(false);
 
+  // ── 投資家目線フィルタ state ──
+  const [listedOnly, setListedOnly] = useState(true);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [selectedMarkets, setSelectedMarkets] = useState<Set<string>>(new Set());
+  const [marketCapMin, setMarketCapMin] = useState<string>(''); // 億円、空文字で無制限
+  const [marketCapMax, setMarketCapMax] = useState<string>('');
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
+  const [showAdvFilters, setShowAdvFilters] = useState(false);
+  const [favoritesSet, setFavoritesSet] = useState<Set<string>>(new Set());
+
+  // ── 上場銘柄ユニバース（/api/stocks と共有キャッシュ） ──
+  const { data: stocksData } = useQuery<StocksResponse>({
+    queryKey: ['stocks'],
+    queryFn: fetchStockUniverse,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const stockMap = useMemo(() => {
+    const m = new Map<string, Stock>();
+    if (stocksData?.stocks) {
+      for (const s of stocksData.stocks) m.set(s.code, s);
+    }
+    return m;
+  }, [stocksData]);
+
+  // 市場区分の候補一覧
+  const availableMarkets = useMemo(() => {
+    const set = new Set<string>();
+    stockMap.forEach((s) => {
+      if (s.market) set.add(s.market);
+    });
+    return Array.from(set).sort();
+  }, [stockMap]);
+
   // クライアント側キャッシュ: 日付→データ をメモリに保持（1週間分）
   const clientCache = useRef<Map<string, { earnings: EarningsData[]; source: string; fetchedAt: number }>>(new Map());
   const prefetchingRef = useRef(false);
@@ -79,10 +147,29 @@ export default function EarningsPage() {
         if (from) setDateFrom(from);
         if (to) setDateTo(to);
       }
+      const savedAdv = localStorage.getItem(ADV_FILTERS_STORAGE_KEY);
+      if (savedAdv) {
+        const a = JSON.parse(savedAdv);
+        if (typeof a.listedOnly === 'boolean') setListedOnly(a.listedOnly);
+        if (typeof a.favoritesOnly === 'boolean') setFavoritesOnly(a.favoritesOnly);
+        if (Array.isArray(a.selectedMarkets)) setSelectedMarkets(new Set(a.selectedMarkets));
+        if (typeof a.marketCapMin === 'string') setMarketCapMin(a.marketCapMin);
+        if (typeof a.marketCapMax === 'string') setMarketCapMax(a.marketCapMax);
+        if (typeof a.quickFilter === 'string') setQuickFilter(a.quickFilter);
+      }
+      // お気に入り銘柄を読み込み
+      setFavoritesSet(new Set(getFavorites()));
     } catch {
       // localStorage使用不可
     }
     setFiltersLoaded(true);
+  }, []);
+
+  // お気に入り変更を検知（他タブ / 他ページでの変更反映）
+  useEffect(() => {
+    const handler = () => setFavoritesSet(new Set(getFavorites()));
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
   }, []);
 
   // API呼び出し（キャッシュ書き込み含む）
@@ -246,6 +333,26 @@ export default function EarningsPage() {
     }
   }, [filters, filtersLoaded]);
 
+  // 投資家フィルタ変更時にlocalStorageへ保存
+  useEffect(() => {
+    if (!filtersLoaded) return;
+    try {
+      localStorage.setItem(
+        ADV_FILTERS_STORAGE_KEY,
+        JSON.stringify({
+          listedOnly,
+          favoritesOnly,
+          selectedMarkets: Array.from(selectedMarkets),
+          marketCapMin,
+          marketCapMax,
+          quickFilter,
+        }),
+      );
+    } catch {
+      // localStorage使用不可
+    }
+  }, [listedOnly, favoritesOnly, selectedMarkets, marketCapMin, marketCapMax, quickFilter, filtersLoaded]);
+
   // 日付範囲変更時にlocalStorageへ保存
   useEffect(() => {
     if (!filtersLoaded) return;
@@ -316,6 +423,10 @@ export default function EarningsPage() {
   // =========== フィルタ & ソート ===========
   const filteredData = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const hasUniverse = stockMap.size > 0;
+    const minCap = marketCapMin !== '' ? parseFloat(marketCapMin) : null;
+    const maxCap = marketCapMax !== '' ? parseFloat(marketCapMax) : null;
+
     return earningsData.filter((item) => {
       // 種別フィルター
       if (item.type === '決算' && !filters.決算短信) return false;
@@ -325,11 +436,74 @@ export default function EarningsPage() {
       if (item.type === '四半期訂正' && !filters.四半期訂正) return false;
       if (item.type === '業績修正' && !filters.業績修正) return false;
       if (item.type === '配当修正' && !filters.配当修正) return false;
+
+      const stock = stockMap.get(item.code);
+
+      // 上場企業のみ: ユニバースに存在する銘柄だけ通す。ユニバース未ロード時は名称ベースで判定（ETF/REIT 除外のみ）
+      if (listedOnly) {
+        if (hasUniverse) {
+          if (!stock) return false;
+        } else {
+          // フォールバック: 名称ベースで ETF/REIT 等を除外
+          if (!isListedCompany({ name: item.companyName } as Stock)) return false;
+        }
+      }
+
+      // お気に入り銘柄のみ
+      if (favoritesOnly && !favoritesSet.has(item.code)) return false;
+
+      // 市場区分フィルタ
+      if (selectedMarkets.size > 0) {
+        if (!stock || !selectedMarkets.has(stock.market)) return false;
+      }
+
+      // 時価総額レンジ（億円）
+      if (minCap !== null || maxCap !== null) {
+        if (!stock || !stock.marketCap || stock.marketCap <= 0) return false;
+        const capOku = stock.marketCap / 100_000_000;
+        if (minCap !== null && capOku < minCap) return false;
+        if (maxCap !== null && capOku > maxCap) return false;
+      }
+
+      // クイックフィルタ
+      switch (quickFilter) {
+        case 'increase':
+          if (item.type !== '決算' || item.netProfitYY == null || item.netProfitYY <= 0) return false;
+          break;
+        case 'decrease':
+          if (item.type !== '決算' || item.netProfitYY == null || item.netProfitYY >= 0) return false;
+          break;
+        case 'upwardRevision':
+          if (item.type !== '業績修正' || item.salesYY == null || item.salesYY <= 0) return false;
+          break;
+        case 'downwardRevision':
+          if (item.type !== '業績修正' || item.salesYY == null || item.salesYY >= 0) return false;
+          break;
+        case 'beatConsensus':
+          if (item.netProfitCon == null || item.netProfitCon <= 0) return false;
+          break;
+        case 'dividendUp':
+          if (item.dividendChange == null || item.dividendChange <= 0) return false;
+          break;
+      }
+
       // テキスト検索
       if (q && !item.code.toLowerCase().includes(q) && !item.companyName.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [earningsData, filters, searchQuery]);
+  }, [
+    earningsData,
+    filters,
+    searchQuery,
+    listedOnly,
+    favoritesOnly,
+    selectedMarkets,
+    marketCapMin,
+    marketCapMax,
+    quickFilter,
+    stockMap,
+    favoritesSet,
+  ]);
 
   const sortedData = useMemo(() => {
     if (!sortConfig) return filteredData;
@@ -506,6 +680,76 @@ export default function EarningsPage() {
     { label: 'Yahoo', url: `https://finance.yahoo.co.jp/quote/${code}.T` },
   ];
 
+  // サプライズ判定: 純利益のコンセンサス比乖離が ±10% 以上で「要チェック」
+  const SURPRISE_THRESHOLD = 10;
+  const isSurprise = (item: EarningsData): boolean =>
+    item.netProfitCon != null && Math.abs(item.netProfitCon) >= SURPRISE_THRESHOLD;
+
+  // CSV エクスポート（投資家目線で最低限の列）
+  const handleExportCSV = useCallback(() => {
+    if (sortedData.length === 0) return;
+    const rows = sortedData.map((d) => {
+      const stock = stockMap.get(d.code);
+      return {
+        date: d.date,
+        time: d.time,
+        code: d.code,
+        companyName: d.companyName,
+        market: stock?.market || '',
+        marketCapOku: stock && stock.marketCap > 0 ? Math.round(stock.marketCap / 100_000_000) : '',
+        type: d.type,
+        salesYY: d.salesYY ?? '',
+        operatingProfitYY: d.operatingProfitYY ?? '',
+        ordinaryProfitYY: d.ordinaryProfitYY ?? '',
+        netProfitYY: d.netProfitYY ?? '',
+        salesCon: d.salesCon ?? '',
+        operatingProfitCon: d.operatingProfitCon ?? '',
+        ordinaryProfitCon: d.ordinaryProfitCon ?? '',
+        netProfitCon: d.netProfitCon ?? '',
+        dividend: d.dividend ?? '',
+        dividendChange: d.dividendChange ?? '',
+        dataSource: d.dataSource ?? '',
+      };
+    });
+    const csv = convertToCSV(rows);
+    // Excel で文字化けしないよう BOM を付ける
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `earnings_${dateFrom}_${dateTo}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [sortedData, stockMap, dateFrom, dateTo]);
+
+  // 市場区分のトグル
+  const toggleMarket = (market: string) => {
+    setSelectedMarkets((prev) => {
+      const next = new Set(prev);
+      if (next.has(market)) next.delete(market);
+      else next.add(market);
+      return next;
+    });
+  };
+
+  // 投資家フィルタのリセット
+  const resetAdvFilters = () => {
+    setListedOnly(true);
+    setFavoritesOnly(false);
+    setSelectedMarkets(new Set());
+    setMarketCapMin('');
+    setMarketCapMax('');
+    setQuickFilter('all');
+  };
+
+  const advFilterActiveCount =
+    (favoritesOnly ? 1 : 0) +
+    (selectedMarkets.size > 0 ? 1 : 0) +
+    (marketCapMin !== '' || marketCapMax !== '' ? 1 : 0) +
+    (quickFilter !== 'all' ? 1 : 0);
+
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       <div className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-8">
@@ -600,6 +844,140 @@ export default function EarningsPage() {
             })}
           </div>
 
+          {/* 投資家目線フィルタ（銘柄絞り込み + クイックフィルタ + CSV） */}
+          <div className="bg-gray-800/40 border border-gray-700 rounded-lg px-3 py-2 mb-3 space-y-2">
+            {/* 1段目: 常時表示 */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={listedOnly}
+                  onChange={(e) => setListedOnly(e.target.checked)}
+                  className="w-3.5 h-3.5"
+                />
+                <span className="text-xs sm:text-sm">上場企業のみ</span>
+                <span className="text-xs text-gray-500">(ETF・REIT・非上場を除外)</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={favoritesOnly}
+                  onChange={(e) => setFavoritesOnly(e.target.checked)}
+                  className="w-3.5 h-3.5"
+                />
+                <span className="text-xs sm:text-sm">★ お気に入りのみ</span>
+                <span className="text-xs text-gray-500">({favoritesSet.size}銘柄)</span>
+              </label>
+              <select
+                value={quickFilter}
+                onChange={(e) => setQuickFilter(e.target.value as QuickFilter)}
+                className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs sm:text-sm text-white"
+                title="投資判断のクイックフィルタ"
+              >
+                <option value="all">全て</option>
+                <option value="increase">増益のみ（決算・利YY&gt;0）</option>
+                <option value="decrease">減益のみ（決算・利YY&lt;0）</option>
+                <option value="upwardRevision">上方修正のみ</option>
+                <option value="downwardRevision">下方修正のみ</option>
+                <option value="beatConsensus">コンセンサス超過（利Con&gt;0）</option>
+                <option value="dividendUp">配当増額</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setShowAdvFilters((v) => !v)}
+                className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs sm:text-sm whitespace-nowrap"
+              >
+                詳細 {showAdvFilters ? '▲' : '▼'}
+                {advFilterActiveCount > 0 && (
+                  <span className="ml-1 px-1 rounded bg-blue-600 text-white text-[10px]">{advFilterActiveCount}</span>
+                )}
+              </button>
+              <div className="ml-auto flex items-center gap-2">
+                {advFilterActiveCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={resetAdvFilters}
+                    className="px-2 py-1 text-xs text-gray-400 hover:text-white whitespace-nowrap"
+                  >
+                    条件クリア
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleExportCSV}
+                  disabled={sortedData.length === 0}
+                  className="px-2 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed rounded text-xs sm:text-sm whitespace-nowrap"
+                  title="表示中の決算データをCSVエクスポート"
+                >
+                  CSV
+                </button>
+              </div>
+            </div>
+
+            {/* 2段目: 詳細フィルタ（折りたたみ） */}
+            {showAdvFilters && (
+              <div className="pt-2 border-t border-gray-700 space-y-2">
+                {/* 市場区分 */}
+                {availableMarkets.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-xs text-gray-400 mr-1">市場:</span>
+                    {availableMarkets.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => toggleMarket(m)}
+                        className={`px-2 py-0.5 rounded text-xs border transition-colors ${
+                          selectedMarkets.has(m)
+                            ? 'bg-blue-600 border-blue-500 text-white'
+                            : 'bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                    {selectedMarkets.size > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedMarkets(new Set())}
+                        className="text-xs text-gray-400 hover:text-white ml-1"
+                      >
+                        ✕ クリア
+                      </button>
+                    )}
+                  </div>
+                )}
+                {/* 時価総額レンジ */}
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-gray-400">時価総額:</span>
+                  <input
+                    type="number"
+                    placeholder="最小"
+                    value={marketCapMin}
+                    onChange={(e) => setMarketCapMin(e.target.value)}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white placeholder-gray-500"
+                  />
+                  <span className="text-gray-500">〜</span>
+                  <input
+                    type="number"
+                    placeholder="最大"
+                    value={marketCapMax}
+                    onChange={(e) => setMarketCapMax(e.target.value)}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white placeholder-gray-500"
+                  />
+                  <span className="text-gray-500">億円</span>
+                  <span className="text-gray-600 ml-2">
+                    目安: 大型 1000億〜 / 中型 300〜1000億 / 小型 〜300億
+                  </span>
+                </div>
+                {stockMap.size === 0 && (
+                  <p className="text-xs text-yellow-400">
+                    株価データが未取得のため、市場区分・時価総額フィルタは機能しません。メイン画面を開いてからお試しください。
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* サマリーバー */}
           {filteredData.length > 0 && (
             <div className="flex flex-wrap gap-3 sm:gap-4 mb-4 text-xs">
@@ -679,21 +1057,36 @@ export default function EarningsPage() {
                         </td>
                       </tr>
                     ) : (
-                      sortedData.map((data, index) => (
+                      sortedData.map((data, index) => {
+                        const surprise = isSurprise(data);
+                        const isFav = favoritesSet.has(data.code);
+                        const isSelected = selectedCompany?.code === data.code && selectedCompany?.date === data.date;
+                        const stock = stockMap.get(data.code);
+                        const rowBg = isSelected
+                          ? 'bg-blue-900/30'
+                          : surprise
+                            ? 'bg-yellow-900/15 hover:bg-yellow-900/25'
+                            : 'hover:bg-gray-700/50';
+                        return (
                         <tr
                           key={`${data.code}-${data.date}-${index}`}
                           onClick={() => setSelectedCompany(data)}
-                          className={`hover:bg-gray-700/50 cursor-pointer ${
-                            selectedCompany?.code === data.code && selectedCompany?.date === data.date ? 'bg-blue-900/30' : ''
-                          }`}
+                          className={`cursor-pointer ${rowBg}`}
                         >
                           {dateFrom !== dateTo && (
                             <td className="px-3 py-2 text-gray-400 whitespace-nowrap">{formatDateShort(data.date)}</td>
                           )}
                           <td className="px-3 py-2 text-gray-400 whitespace-nowrap">{data.time}</td>
                           <td className="px-3 py-2 whitespace-nowrap">
+                            {isFav && <span className="text-yellow-400 mr-1" title="お気に入り">★</span>}
+                            {surprise && <span className="text-yellow-300 mr-1" title={`コンセンサス比 ${formatPercent(data.netProfitCon)}`}>⚡</span>}
                             <span className="text-gray-400">{data.code}</span>{' '}
                             <span>{data.companyName}</span>
+                            {stock && (
+                              <span className="ml-1 text-[10px] text-gray-500">
+                                {stock.market}{stock.marketCap > 0 ? ` / ${formatMarketCap(stock.marketCap)}` : ''}
+                              </span>
+                            )}
                           </td>
                           <td className="px-3 py-2">
                             <div className="flex items-center gap-1">
@@ -737,7 +1130,8 @@ export default function EarningsPage() {
                             </div>
                           </td>
                         </tr>
-                      ))
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -783,18 +1177,28 @@ export default function EarningsPage() {
                   {earningsData.length === 0 ? 'この日付のデータはありません' : 'フィルター条件に一致するデータがありません'}
                 </div>
               ) : (
-                sortedData.map((data, index) => (
+                sortedData.map((data, index) => {
+                  const surprise = isSurprise(data);
+                  const isFav = favoritesSet.has(data.code);
+                  const isSelected = selectedCompany?.code === data.code && selectedCompany?.date === data.date;
+                  const stock = stockMap.get(data.code);
+                  const cardBg = isSelected
+                    ? 'bg-gray-800 ring-1 ring-blue-500'
+                    : surprise
+                      ? 'bg-yellow-900/15 ring-1 ring-yellow-600/40'
+                      : 'bg-gray-800';
+                  return (
                   <div
                     key={`m-${data.code}-${data.date}-${index}`}
                     onClick={() => setSelectedCompany(data)}
-                    className={`bg-gray-800 rounded-lg p-3 cursor-pointer active:bg-gray-700 ${
-                      selectedCompany?.code === data.code && selectedCompany?.date === data.date ? 'ring-1 ring-blue-500' : ''
-                    }`}
+                    className={`${cardBg} rounded-lg p-3 cursor-pointer active:bg-gray-700`}
                   >
                     {/* 1行目: 企業情報 */}
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2 min-w-0">
                         {getTypeBadge(data.type, data.salesYY)}
+                        {isFav && <span className="text-yellow-400 text-xs" title="お気に入り">★</span>}
+                        {surprise && <span className="text-yellow-300 text-xs" title={`コンセンサス比 ${formatPercent(data.netProfitCon)}`}>⚡</span>}
                         <span className="text-gray-400 text-xs">{data.code}</span>
                         <span className="text-sm font-medium truncate">{data.companyName}</span>
                       </div>
@@ -802,6 +1206,11 @@ export default function EarningsPage() {
                         {dateFrom !== dateTo && `${formatDateShort(data.date)} `}{data.time}
                       </span>
                     </div>
+                    {stock && (
+                      <div className="text-[10px] text-gray-500 mb-1">
+                        {stock.market}{stock.marketCap > 0 ? ` / ${formatMarketCap(stock.marketCap)}` : ''}
+                      </div>
+                    )}
                     {/* 2行目: YoY指標 */}
                     <div className="grid grid-cols-4 gap-1 text-xs">
                       {[
@@ -854,7 +1263,8 @@ export default function EarningsPage() {
                       </div>
                     )}
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
           </>
