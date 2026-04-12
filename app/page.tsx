@@ -103,6 +103,7 @@ export default function Home() {
         (criteria.codes && criteria.codes.length > 0) ||
         criteria.favoritesOnly === true ||
         criteria.listedOnly === true ||
+        (criteria.exchanges && criteria.exchanges.length > 0) ||
         (criteria.per && (criteria.per.min !== undefined || criteria.per.max !== undefined)) ||
         (criteria.pbr && (criteria.pbr.min !== undefined || criteria.pbr.max !== undefined)) ||
         (criteria.roe && (criteria.roe.min !== undefined || criteria.roe.max !== undefined)) ||

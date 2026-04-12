@@ -6,7 +6,7 @@ import { EarningsData } from '@/lib/types/financial';
 import { Stock, StocksResponse } from '@/lib/types/stock';
 import { mockEarningsData } from '@/lib/data/mock-earnings';
 import { formatPercent, formatMarketCap, convertToCSV } from '@/lib/utils/format';
-import { isListedCompany } from '@/lib/utils/screening';
+import { isListedCompany, getExchange, EXCHANGE_ORDER } from '@/lib/utils/screening';
 import { getFavorites } from '@/lib/utils/favorites';
 
 type SortConfig = { key: string; direction: 'asc' | 'desc' } | null;
@@ -96,6 +96,7 @@ export default function EarningsPage() {
   // ── 投資家目線フィルタ state ──
   const [listedOnly, setListedOnly] = useState(true);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [selectedExchanges, setSelectedExchanges] = useState<Set<string>>(new Set());
   const [selectedMarkets, setSelectedMarkets] = useState<Set<string>>(new Set());
   const [marketCapMin, setMarketCapMin] = useState<string>(''); // 億円、空文字で無制限
   const [marketCapMax, setMarketCapMax] = useState<string>('');
@@ -127,6 +128,15 @@ export default function EarningsPage() {
     return Array.from(set).sort();
   }, [stockMap]);
 
+  // 上場場所（取引所）の候補一覧。ユニバース実在分のみ EXCHANGE_ORDER 順で返す
+  const availableExchanges = useMemo(() => {
+    const set = new Set<string>();
+    stockMap.forEach((s) => {
+      set.add(getExchange(s.market));
+    });
+    return EXCHANGE_ORDER.filter((ex) => set.has(ex));
+  }, [stockMap]);
+
   // クライアント側キャッシュ: 日付→データ をメモリに保持（1週間分）
   const clientCache = useRef<Map<string, { earnings: EarningsData[]; source: string; fetchedAt: number }>>(new Map());
   const prefetchingRef = useRef(false);
@@ -152,6 +162,7 @@ export default function EarningsPage() {
         const a = JSON.parse(savedAdv);
         if (typeof a.listedOnly === 'boolean') setListedOnly(a.listedOnly);
         if (typeof a.favoritesOnly === 'boolean') setFavoritesOnly(a.favoritesOnly);
+        if (Array.isArray(a.selectedExchanges)) setSelectedExchanges(new Set(a.selectedExchanges));
         if (Array.isArray(a.selectedMarkets)) setSelectedMarkets(new Set(a.selectedMarkets));
         if (typeof a.marketCapMin === 'string') setMarketCapMin(a.marketCapMin);
         if (typeof a.marketCapMax === 'string') setMarketCapMax(a.marketCapMax);
@@ -342,6 +353,7 @@ export default function EarningsPage() {
         JSON.stringify({
           listedOnly,
           favoritesOnly,
+          selectedExchanges: Array.from(selectedExchanges),
           selectedMarkets: Array.from(selectedMarkets),
           marketCapMin,
           marketCapMax,
@@ -351,7 +363,7 @@ export default function EarningsPage() {
     } catch {
       // localStorage使用不可
     }
-  }, [listedOnly, favoritesOnly, selectedMarkets, marketCapMin, marketCapMax, quickFilter, filtersLoaded]);
+  }, [listedOnly, favoritesOnly, selectedExchanges, selectedMarkets, marketCapMin, marketCapMax, quickFilter, filtersLoaded]);
 
   // 日付範囲変更時にlocalStorageへ保存
   useEffect(() => {
@@ -452,6 +464,12 @@ export default function EarningsPage() {
       // お気に入り銘柄のみ
       if (favoritesOnly && !favoritesSet.has(item.code)) return false;
 
+      // 上場場所（取引所）フィルタ
+      if (selectedExchanges.size > 0) {
+        if (!stock) return false;
+        if (!selectedExchanges.has(getExchange(stock.market))) return false;
+      }
+
       // 市場区分フィルタ
       if (selectedMarkets.size > 0) {
         if (!stock || !selectedMarkets.has(stock.market)) return false;
@@ -497,6 +515,7 @@ export default function EarningsPage() {
     searchQuery,
     listedOnly,
     favoritesOnly,
+    selectedExchanges,
     selectedMarkets,
     marketCapMin,
     marketCapMax,
@@ -724,6 +743,16 @@ export default function EarningsPage() {
     URL.revokeObjectURL(url);
   }, [sortedData, stockMap, dateFrom, dateTo]);
 
+  // 上場場所のトグル
+  const toggleExchange = (exchange: string) => {
+    setSelectedExchanges((prev) => {
+      const next = new Set(prev);
+      if (next.has(exchange)) next.delete(exchange);
+      else next.add(exchange);
+      return next;
+    });
+  };
+
   // 市場区分のトグル
   const toggleMarket = (market: string) => {
     setSelectedMarkets((prev) => {
@@ -738,6 +767,7 @@ export default function EarningsPage() {
   const resetAdvFilters = () => {
     setListedOnly(true);
     setFavoritesOnly(false);
+    setSelectedExchanges(new Set());
     setSelectedMarkets(new Set());
     setMarketCapMin('');
     setMarketCapMax('');
@@ -746,6 +776,7 @@ export default function EarningsPage() {
 
   const advFilterActiveCount =
     (favoritesOnly ? 1 : 0) +
+    (selectedExchanges.size > 0 ? 1 : 0) +
     (selectedMarkets.size > 0 ? 1 : 0) +
     (marketCapMin !== '' || marketCapMax !== '' ? 1 : 0) +
     (quickFilter !== 'all' ? 1 : 0);
@@ -917,6 +948,35 @@ export default function EarningsPage() {
             {/* 2段目: 詳細フィルタ（折りたたみ） */}
             {showAdvFilters && (
               <div className="pt-2 border-t border-gray-700 space-y-2">
+                {/* 上場場所（取引所） */}
+                {availableExchanges.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-xs text-gray-400 mr-1">上場場所:</span>
+                    {availableExchanges.map((ex) => (
+                      <button
+                        key={ex}
+                        type="button"
+                        onClick={() => toggleExchange(ex)}
+                        className={`px-2 py-0.5 rounded text-xs border transition-colors ${
+                          selectedExchanges.has(ex)
+                            ? 'bg-blue-600 border-blue-500 text-white'
+                            : 'bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600'
+                        }`}
+                      >
+                        {ex}
+                      </button>
+                    ))}
+                    {selectedExchanges.size > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedExchanges(new Set())}
+                        className="text-xs text-gray-400 hover:text-white ml-1"
+                      >
+                        ✕ クリア
+                      </button>
+                    )}
+                  </div>
+                )}
                 {/* 市場区分 */}
                 {availableMarkets.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1.5">

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { ScreeningCriteria } from '@/lib/types/stock';
 import { getFavorites } from '@/lib/utils/favorites';
+import { EXCHANGE_ORDER } from '@/lib/utils/screening';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -105,10 +106,23 @@ export function ScreeningForm({ onSearch, onReset }: ScreeningFormProps) {
     onSearch(merged);
   };
 
+  const toggleExchange = (exchange: string) => {
+    setCriteria(prev => {
+      const current = new Set(prev.exchanges ?? []);
+      if (current.has(exchange)) current.delete(exchange);
+      else current.add(exchange);
+      return {
+        ...prev,
+        exchanges: current.size > 0 ? Array.from(current) : undefined,
+      };
+    });
+  };
+
   // アクティブな条件数をカウント
   const activeCount = [
     criteria.codes?.length,
     criteria.favoritesOnly,
+    criteria.exchanges && criteria.exchanges.length > 0 ? 1 : 0,
     criteria.per?.min ?? criteria.per?.max,
     criteria.pbr?.min ?? criteria.pbr?.max,
     criteria.roe?.min ?? criteria.roe?.max,
@@ -218,6 +232,42 @@ export function ScreeningForm({ onSearch, onReset }: ScreeningFormProps) {
               />
               <span className="text-sm font-medium">お気に入り銘柄のみ表示</span>
             </label>
+          </div>
+
+          {/* 上場場所（取引所）フィルタ */}
+          <div className="border-t pt-4 space-y-2">
+            <Label>
+              上場場所
+              <span className="ml-1 text-xs text-gray-500">（未選択で全て）</span>
+            </Label>
+            <div className="flex flex-wrap gap-2">
+              {EXCHANGE_ORDER.map((ex) => {
+                const selected = criteria.exchanges?.includes(ex) ?? false;
+                return (
+                  <button
+                    key={ex}
+                    type="button"
+                    onClick={() => toggleExchange(ex)}
+                    className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${
+                      selected
+                        ? 'bg-blue-600 border-blue-600 text-white'
+                        : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    {ex}
+                  </button>
+                );
+              })}
+              {criteria.exchanges && criteria.exchanges.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setCriteria(prev => ({ ...prev, exchanges: undefined }))}
+                  className="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700"
+                >
+                  ✕ クリア
+                </button>
+              )}
+            </div>
           </div>
 
           {/* 財務指標フィルタ */}

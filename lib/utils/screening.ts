@@ -2,6 +2,37 @@ import { Stock, ScreeningCriteria, SortField, SortDirection } from '@/lib/types/
 import { getFavorites } from './favorites';
 
 /**
+ * 市場区分文字列から上場場所（取引所）を判定する。
+ * Yahoo Finance は "Tokyo" / "JPX"、J-Quants は "プライム (内国株式)" などを返すため、
+ * 文字列をざっくり見て 東証 / 名証 / 札証 / 福証 / その他 に分類する。
+ */
+export function getExchange(market: string | undefined | null): string {
+  if (!market) return 'その他';
+  const m = String(market).toLowerCase();
+  if (m.includes('名証') || m.includes('名古屋') || m.includes('nagoya')) return '名証';
+  if (m.includes('札証') || m.includes('札幌') || m.includes('sapporo')) return '札証';
+  if (m.includes('福証') || m.includes('福岡') || m.includes('fukuoka')) return '福証';
+  if (
+    m.includes('東証') ||
+    m.includes('tokyo') ||
+    m.includes('jpx') ||
+    m.includes('プライム') ||
+    m.includes('スタンダード') ||
+    m.includes('グロース') ||
+    m.includes('マザーズ') ||
+    m.includes('jasdaq')
+  ) {
+    return '東証';
+  }
+  return 'その他';
+}
+
+/**
+ * 上場場所の表示順（常に東証を先頭に）
+ */
+export const EXCHANGE_ORDER = ['東証', '名証', '札証', '福証', 'その他'] as const;
+
+/**
  * 銘柄が「上場企業（普通株式）」か判定する。
  * ETF・ETN・REIT・インフラファンド・投資信託等を名称ベースで除外する。
  */
@@ -137,6 +168,12 @@ export function screenStocks(stocks: Stock[], criteria: ScreeningCriteria): Stoc
   if (criteria.favoritesOnly) {
     const favoriteCodes = getFavorites();
     filtered = filtered.filter(stock => favoriteCodes.includes(stock.code));
+  }
+
+  // 上場場所（取引所）フィルタ
+  if (criteria.exchanges && criteria.exchanges.length > 0) {
+    const allowed = new Set(criteria.exchanges);
+    filtered = filtered.filter(stock => allowed.has(getExchange(stock.market)));
   }
 
   // その他の条件でフィルタリング

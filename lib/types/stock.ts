@@ -46,6 +46,7 @@ export interface ScreeningCriteria {
   };
   favoritesOnly?: boolean; // お気に入りのみ表示
   listedOnly?: boolean; // 上場企業のみ表示（ETF・REIT・インフラファンド等を除外）
+  exchanges?: string[]; // 上場場所（東証／名証／札証／福証／その他）。空または未指定で全て
 }
 
 // 更新頻度設定
