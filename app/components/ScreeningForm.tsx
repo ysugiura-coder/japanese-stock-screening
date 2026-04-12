@@ -49,7 +49,7 @@ const TOOLTIPS: Record<string, string> = {
 };
 
 export function ScreeningForm({ onSearch, onReset }: ScreeningFormProps) {
-  const [criteria, setCriteria] = useState<ScreeningCriteria>({});
+  const [criteria, setCriteria] = useState<ScreeningCriteria>({ listedOnly: true });
   const [codeInput, setCodeInput] = useState('');
   const [isExpanded, setIsExpanded] = useState(true);
 
@@ -70,7 +70,7 @@ export function ScreeningForm({ onSearch, onReset }: ScreeningFormProps) {
   };
 
   const handleReset = () => {
-    setCriteria({});
+    setCriteria({ listedOnly: true });
     setCodeInput('');
     onReset();
   };
@@ -99,9 +99,10 @@ export function ScreeningForm({ onSearch, onReset }: ScreeningFormProps) {
   };
 
   const applyPreset = (preset: typeof PRESETS[number]) => {
-    setCriteria(preset.criteria);
+    const merged: ScreeningCriteria = { ...preset.criteria, listedOnly: criteria.listedOnly ?? true };
+    setCriteria(merged);
     setCodeInput('');
-    onSearch(preset.criteria);
+    onSearch(merged);
   };
 
   // アクティブな条件数をカウント
@@ -184,8 +185,25 @@ export function ScreeningForm({ onSearch, onReset }: ScreeningFormProps) {
             </div>
           </div>
 
-          {/* お気に入りのみ表示 */}
-          <div className="border-t pt-4">
+          {/* お気に入り・上場企業フィルタ */}
+          <div className="border-t pt-4 space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={criteria.listedOnly ?? true}
+                onChange={(e) =>
+                  setCriteria(prev => ({
+                    ...prev,
+                    listedOnly: e.target.checked,
+                  }))
+                }
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm font-medium">
+                上場企業のみ表示
+                <span className="ml-1 text-xs text-gray-500">（ETF・REIT・インフラファンド等を除外）</span>
+              </span>
+            </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"

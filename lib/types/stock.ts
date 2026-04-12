@@ -45,6 +45,7 @@ export interface ScreeningCriteria {
     max?: number;
   };
   favoritesOnly?: boolean; // お気に入りのみ表示
+  listedOnly?: boolean; // 上場企業のみ表示（ETF・REIT・インフラファンド等を除外）
 }
 
 // 更新頻度設定

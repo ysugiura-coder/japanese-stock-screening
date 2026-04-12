@@ -79,7 +79,7 @@ async function updateStocks(): Promise<void> {
 }
 
 export default function Home() {
-  const [criteria, setCriteria] = useState<ScreeningCriteria>({});
+  const [criteria, setCriteria] = useState<ScreeningCriteria>({ listedOnly: true });
   const queryClient = useQueryClient();
 
   const { data, isLoading, error } = useQuery<StocksResponse>({
@@ -102,6 +102,7 @@ export default function Home() {
       const hasCriteria =
         (criteria.codes && criteria.codes.length > 0) ||
         criteria.favoritesOnly === true ||
+        criteria.listedOnly === true ||
         (criteria.per && (criteria.per.min !== undefined || criteria.per.max !== undefined)) ||
         (criteria.pbr && (criteria.pbr.min !== undefined || criteria.pbr.max !== undefined)) ||
         (criteria.roe && (criteria.roe.min !== undefined || criteria.roe.max !== undefined)) ||
@@ -124,7 +125,7 @@ export default function Home() {
   };
 
   const handleReset = () => {
-    setCriteria({});
+    setCriteria({ listedOnly: true });
   };
 
   const handleUpdate = useCallback(async () => {

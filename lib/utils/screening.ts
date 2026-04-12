@@ -2,6 +2,36 @@ import { Stock, ScreeningCriteria, SortField, SortDirection } from '@/lib/types/
 import { getFavorites } from './favorites';
 
 /**
+ * 銘柄が「上場企業（普通株式）」か判定する。
+ * ETF・ETN・REIT・インフラファンド・投資信託等を名称ベースで除外する。
+ */
+export function isListedCompany(stock: Stock): boolean {
+  const name = stock.name || '';
+  if (!name) return true;
+
+  // REIT・インフラファンド等の投資法人形態
+  if (name.includes('投資法人')) return false;
+
+  // ETF / ETN / 上場投信系のキーワード
+  const excludePatterns = [
+    'ETF', 'ETN',
+    '上場投信', '上場インデックス', '連動型上場投信',
+    'NEXT FUNDS', 'MAXIS', 'iShares', 'iFree', 'SPDR',
+    'NZAM', 'One ETF', 'ダイワ上場投信', 'Listed Index',
+    'グローバルX', 'Global X', 'SMDAM', 'シンプレクス',
+    '東証REIT', 'Jリート', 'Ｊリート', 'Jリート', 'J-REIT',
+    'ブル2倍', 'ベア2倍', 'レバレッジ上場投信', 'インバース上場投信',
+    'ダブルインバース', 'トラッカー',
+  ];
+
+  for (const p of excludePatterns) {
+    if (name.includes(p)) return false;
+  }
+
+  return true;
+}
+
+/**
  * 銘柄がスクリーニング条件を満たすかチェック
  */
 export function matchesCriteria(stock: Stock, criteria: ScreeningCriteria): boolean {
@@ -97,6 +127,11 @@ export function matchesCriteria(stock: Stock, criteria: ScreeningCriteria): bool
  */
 export function screenStocks(stocks: Stock[], criteria: ScreeningCriteria): Stock[] {
   let filtered = stocks;
+
+  // 上場企業のみ表示（ETF・REIT等を除外）
+  if (criteria.listedOnly) {
+    filtered = filtered.filter(isListedCompany);
+  }
 
   // お気に入りのみ表示
   if (criteria.favoritesOnly) {
