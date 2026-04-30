@@ -55,16 +55,28 @@ export async function GET(request: NextRequest) {
     // J-Quants TDnet からデータ取得
     if (source === 'tdnet' || source === 'auto') {
       try {
-        const earnings = await fetchEarningsFromJQuants(date, apiKey, { maxConcurrent: 3, batchDelayMs: 200 });
+        const { earnings, historyTimeoutRemaining } = await fetchEarningsFromJQuants(date, apiKey, {
+          maxConcurrent: 3,
+          batchDelayMs: 200,
+          // Vercel 60s タイムアウト - 余白 15s = 45s 予算
+          deadlineMs: 45_000,
+        });
         const earningsWithSource = earnings.map((e) => ({
           ...e,
           dataSource: 'tdnet' as const,
         }));
 
-        const response = buildResponse(earningsWithSource, date, 'tdnet');
+        const warning =
+          historyTimeoutRemaining > 0
+            ? `履歴取得が時間内に終わらず、${historyTimeoutRemaining} 銘柄の YoY が未計算です。もう一度同じ日付を開くと、サーバ側キャッシュで進捗します。`
+            : undefined;
+
+        const response = buildResponse(earningsWithSource, date, 'tdnet', warning);
+        // 部分結果のときは短めにキャッシュして再フェッチを促す
         const today = new Date().toISOString().split('T')[0];
-        const ttl = date < today ? 7 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
-        memoryCache.set(cacheKey, response, ttl);
+        const fullTtl = date < today ? 7 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
+        const partialTtl = 60 * 1000; // 部分結果は 1 分
+        memoryCache.set(cacheKey, response, historyTimeoutRemaining > 0 ? partialTtl : fullTtl);
         return NextResponse.json(response, { headers: corsHeaders });
       } catch (error) {
         console.error('J-Quants statements fetch error:', error);

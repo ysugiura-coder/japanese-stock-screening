@@ -218,8 +218,22 @@ export default function EarningsPage() {
     const params = new URLSearchParams({ date, source });
     if (forceRefresh) params.set('clearCache', 'true');
     const res = await fetch(`/api/earnings?${params}`, { headers });
-    const data = await res.json();
 
+    // Vercel 関数タイムアウト等で HTML/テキストが返る場合があるため、
+    // Content-Type を見て JSON でなければ生テキストでエラー化する。
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      const text = await res.text();
+      const isTimeout = /FUNCTION_INVOCATION_TIMEOUT/i.test(text);
+      const snippet = text.replace(/\s+/g, ' ').trim().substring(0, 200);
+      throw new Error(
+        isTimeout
+          ? `サーバ処理が時間内に終わりませんでした（Vercel 60s タイムアウト）。同じ日付をもう一度開くと、キャッシュで段階的に表示されるはずです。`
+          : `サーバから JSON 以外が返されました (HTTP ${res.status}): ${snippet}`,
+      );
+    }
+
+    const data = await res.json();
     if (!res.ok) throw new Error(data.error || `API error: ${res.status}`);
     return { earnings: data.earnings || [], source: data.source || 'unknown', warning: data.warning };
   }, []);
@@ -669,6 +683,16 @@ export default function EarningsPage() {
     if (source === 'tdnet') headers['x-jquants-api-key'] = jquantsApiKey;
     fetch(`/api/earnings/history?code=${code}&source=${source}`, { headers })
       .then(async (res) => {
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) {
+          const text = await res.text();
+          const isTimeout = /FUNCTION_INVOCATION_TIMEOUT/i.test(text);
+          throw new Error(
+            isTimeout
+              ? '履歴取得がサーバ側でタイムアウトしました。もう一度開くとキャッシュで段階的に取得されます。'
+              : `サーバから JSON 以外が返されました (HTTP ${res.status})`,
+          );
+        }
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         return data as CompanyHistoryResponse;

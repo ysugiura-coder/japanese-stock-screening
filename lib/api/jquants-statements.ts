@@ -362,20 +362,36 @@ export function mapStatementToEarnings(
 
 // ========== 日付指定: 一覧取得（YoY つき） ==========
 
+export interface FetchEarningsResult {
+  earnings: EarningsData[];
+  /** YoY 用の履歴取得が予算切れで途中打ち切りになった場合、残った銘柄数 */
+  historyTimeoutRemaining: number;
+}
+
+/**
+ * 指定日の決算短信一覧を取得し、各銘柄の前年同期 statement を引き当てて YoY を算出する。
+ *
+ * Vercel の 60 秒関数タイムアウトを超えないように **deadline 予算** を持ち、
+ * 予算が尽きた銘柄については履歴フェッチを諦めて絶対値のみで返す（YoY=null）。
+ * これにより常にタイムアウト前にレスポンスが返り、サーバ側 30 日キャッシュには
+ * 取れた分だけ蓄積する → 連続呼び出しで漸進的に充実する。
+ */
 export async function fetchEarningsFromJQuants(
   date: string,
   apiKey: string,
-  options?: { maxConcurrent?: number; batchDelayMs?: number },
-): Promise<EarningsData[]> {
-  // J-Quants V2 にはレート制限があるので、並列度を絞る + バッチ間に小休止
+  options?: { maxConcurrent?: number; batchDelayMs?: number; deadlineMs?: number },
+): Promise<FetchEarningsResult> {
   const maxConcurrent = options?.maxConcurrent ?? 3;
   const batchDelayMs = options?.batchDelayMs ?? 200;
+  // デフォルト 45 秒予算（60 秒タイムアウト - 余白 15 秒）
+  const deadlineMs = options?.deadlineMs ?? 45_000;
+  const startedAt = Date.now();
+  const deadline = startedAt + deadlineMs;
 
   const todayStmts = await fetchStatementsByDate(date, apiKey);
-  if (todayStmts.length === 0) return [];
+  if (todayStmts.length === 0) return { earnings: [], historyTimeoutRemaining: 0 };
 
-  // 履歴フェッチが必要なのは YoY/QoQ を計算する 決算 と 四半期 のみ。
-  // 業績修正・配当修正・その他は単発レコードなので履歴不要。
+  // 履歴フェッチが必要なのは YoY/QoQ を計算する 決算 と 四半期 のみ
   const codesNeedingHistory = Array.from(
     new Set(
       todayStmts
@@ -388,9 +404,13 @@ export async function fetchEarningsFromJQuants(
     ),
   );
 
-  // 並列で各銘柄の履歴を取得（キャッシュ済みは即返る）
   const historyByCode = new Map<string, RawStatementV2[]>();
-  for (let i = 0; i < codesNeedingHistory.length; i += maxConcurrent) {
+  let timedOutAt = -1; // 予算切れ後はインデックス記録
+  outer: for (let i = 0; i < codesNeedingHistory.length; i += maxConcurrent) {
+    if (Date.now() >= deadline) {
+      timedOutAt = i;
+      break;
+    }
     const batch = codesNeedingHistory.slice(i, i + maxConcurrent);
     await Promise.all(
       batch.map(async (code) => {
@@ -403,10 +423,17 @@ export async function fetchEarningsFromJQuants(
         }
       }),
     );
+    if (Date.now() >= deadline) {
+      timedOutAt = i + maxConcurrent;
+      break outer;
+    }
     if (i + maxConcurrent < codesNeedingHistory.length && batchDelayMs > 0) {
       await new Promise((r) => setTimeout(r, batchDelayMs));
     }
   }
+
+  const remaining =
+    timedOutAt >= 0 ? Math.max(0, codesNeedingHistory.length - timedOutAt) : 0;
 
   const results: EarningsData[] = todayStmts.map((s) => {
     const code = localCodeTo4(s.Code);
@@ -417,7 +444,7 @@ export async function fetchEarningsFromJQuants(
   });
 
   results.sort((a, b) => a.time.localeCompare(b.time));
-  return results;
+  return { earnings: results, historyTimeoutRemaining: remaining };
 }
 
 // ========== 銘柄の決算履歴（過去 N 四半期推移） ==========
