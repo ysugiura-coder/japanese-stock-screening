@@ -69,22 +69,39 @@ interface StatementsResponseV2 {
 
 // ========== 共通フェッチャ ==========
 
-// 429 (Rate limit) の場合は指数バックオフで最大 5 回リトライ。
+// 429 (Rate limit) の場合は指数バックオフでリトライ。
+// signal が abort された時点で即座に中断する（呼び出し側の deadline 用）。
 // グローバルセマフォと併用してプロセス全体の同時実行数を絞る。
 async function fetchWithRateLimitRetry(
   url: string,
   init: RequestInit,
-  maxRetries = 5,
+  maxRetries = 3,
 ): Promise<Response> {
+  if (init.signal?.aborted) {
+    throw new DOMException('Aborted before start', 'AbortError');
+  }
   await acquireGlobalSlot();
   try {
     let attempt = 0;
     for (;;) {
+      if (init.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
       const res = await fetch(url, init);
       if (res.status !== 429 || attempt >= maxRetries) return res;
-      // 1s, 2s, 4s, 8s, 16s（合計最大 31 秒待機）
+      // 1s, 2s, 4s（合計最大 7 秒待機）
       const waitMs = 1000 * Math.pow(2, attempt);
-      await new Promise((r) => setTimeout(r, waitMs));
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(resolve, waitMs);
+        init.signal?.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(t);
+            reject(new DOMException('Aborted during retry wait', 'AbortError'));
+          },
+          { once: true },
+        );
+      });
       attempt++;
     }
   } finally {
@@ -95,6 +112,7 @@ async function fetchWithRateLimitRetry(
 async function fetchSummaryPaged(
   params: Record<string, string>,
   apiKey: string,
+  signal?: AbortSignal,
 ): Promise<RawStatementV2[]> {
   if (!apiKey) {
     throw new Error('J-Quants APIキーが指定されていません');
@@ -109,6 +127,7 @@ async function fetchSummaryPaged(
 
     const res = await fetchWithRateLimitRetry(url.toString(), {
       headers: { 'x-api-key': apiKey },
+      signal,
     });
 
     if (!res.ok) {
@@ -142,12 +161,13 @@ async function fetchSummaryPaged(
 export async function fetchStatementsByDate(
   date: string,
   apiKey: string,
+  signal?: AbortSignal,
 ): Promise<RawStatementV2[]> {
   const cacheKey = `jqStmtByDate:${date}`;
   const cached = memoryCache.get<RawStatementV2[]>(cacheKey);
   if (cached) return cached;
 
-  const stmts = await fetchSummaryPaged({ date }, apiKey);
+  const stmts = await fetchSummaryPaged({ date }, apiKey, signal);
   const today = new Date().toISOString().split('T')[0];
   const ttl = date < today ? 7 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
   memoryCache.set(cacheKey, stmts, ttl);
@@ -158,15 +178,16 @@ export async function fetchStatementsByDate(
 export async function fetchStatementsByCode(
   code4: string,
   apiKey: string,
+  signal?: AbortSignal,
 ): Promise<RawStatementV2[]> {
   const cacheKey = `jqStmtByCode:${code4}`;
   const cached = memoryCache.get<RawStatementV2[]>(cacheKey);
   if (cached) return cached;
 
   // J-Quants の 5 桁コード仕様（4桁 + 普通株 "0"）。両方試す。
-  let stmts = await fetchSummaryPaged({ code: code4 }, apiKey);
+  let stmts = await fetchSummaryPaged({ code: code4 }, apiKey, signal);
   if (stmts.length === 0) {
-    stmts = await fetchSummaryPaged({ code: `${code4}0` }, apiKey);
+    stmts = await fetchSummaryPaged({ code: `${code4}0` }, apiKey, signal);
   }
 
   // 開示日昇順にソート
@@ -383,68 +404,75 @@ export async function fetchEarningsFromJQuants(
 ): Promise<FetchEarningsResult> {
   const maxConcurrent = options?.maxConcurrent ?? 3;
   const batchDelayMs = options?.batchDelayMs ?? 200;
-  // デフォルト 45 秒予算（60 秒タイムアウト - 余白 15 秒）
+  // デフォルト 45 秒予算（60 秒関数タイムアウト - 余白 15 秒）
   const deadlineMs = options?.deadlineMs ?? 45_000;
-  const startedAt = Date.now();
-  const deadline = startedAt + deadlineMs;
 
-  const todayStmts = await fetchStatementsByDate(date, apiKey);
-  if (todayStmts.length === 0) return { earnings: [], historyTimeoutRemaining: 0 };
+  // AbortController で全履歴フェッチを締切時に確実に中断
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), deadlineMs);
+  const signal = controller.signal;
 
-  // 履歴フェッチが必要なのは YoY/QoQ を計算する 決算 と 四半期 のみ
-  const codesNeedingHistory = Array.from(
-    new Set(
-      todayStmts
-        .filter((s) => {
-          const t = classifyType(s.DocType);
-          return t === '決算' || t === '四半期';
-        })
-        .map((s) => localCodeTo4(s.Code))
-        .filter(Boolean),
-    ),
-  );
-
-  const historyByCode = new Map<string, RawStatementV2[]>();
-  let timedOutAt = -1; // 予算切れ後はインデックス記録
-  outer: for (let i = 0; i < codesNeedingHistory.length; i += maxConcurrent) {
-    if (Date.now() >= deadline) {
-      timedOutAt = i;
-      break;
+  try {
+    const todayStmts = await fetchStatementsByDate(date, apiKey, signal);
+    if (todayStmts.length === 0) {
+      return { earnings: [], historyTimeoutRemaining: 0 };
     }
-    const batch = codesNeedingHistory.slice(i, i + maxConcurrent);
-    await Promise.all(
-      batch.map(async (code) => {
-        try {
-          const list = await fetchStatementsByCode(code, apiKey);
-          historyByCode.set(code, list);
-        } catch (e) {
-          console.warn(`[jq] history fetch failed for ${code}:`, e instanceof Error ? e.message : e);
-          historyByCode.set(code, []);
-        }
-      }),
+
+    // 履歴フェッチが必要なのは YoY/QoQ を計算する 決算 と 四半期 のみ
+    const codesNeedingHistory = Array.from(
+      new Set(
+        todayStmts
+          .filter((s) => {
+            const t = classifyType(s.DocType);
+            return t === '決算' || t === '四半期';
+          })
+          .map((s) => localCodeTo4(s.Code))
+          .filter(Boolean),
+      ),
     );
-    if (Date.now() >= deadline) {
-      timedOutAt = i + maxConcurrent;
-      break outer;
+
+    const historyByCode = new Map<string, RawStatementV2[]>();
+    let processedCount = 0;
+    outer: for (let i = 0; i < codesNeedingHistory.length; i += maxConcurrent) {
+      if (signal.aborted) break;
+      const batch = codesNeedingHistory.slice(i, i + maxConcurrent);
+      await Promise.all(
+        batch.map(async (code) => {
+          try {
+            const list = await fetchStatementsByCode(code, apiKey, signal);
+            historyByCode.set(code, list);
+            processedCount++;
+          } catch (e) {
+            // AbortError は予算切れ。それ以外は実エラーだが、いずれもこの銘柄は YoY なしで返す
+            historyByCode.set(code, []);
+            const isAbort = e instanceof Error && (e.name === 'AbortError' || e.message.includes('Aborted'));
+            if (!isAbort) {
+              console.warn(`[jq] history fetch failed for ${code}:`, e instanceof Error ? e.message : e);
+            }
+          }
+        }),
+      );
+      if (signal.aborted) break outer;
+      if (i + maxConcurrent < codesNeedingHistory.length && batchDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, batchDelayMs));
+      }
     }
-    if (i + maxConcurrent < codesNeedingHistory.length && batchDelayMs > 0) {
-      await new Promise((r) => setTimeout(r, batchDelayMs));
-    }
+
+    const remaining = Math.max(0, codesNeedingHistory.length - processedCount);
+
+    const results: EarningsData[] = todayStmts.map((s) => {
+      const code = localCodeTo4(s.Code);
+      const history = historyByCode.get(code) || [];
+      const priorYear = history.length > 0 ? findPriorYearStatement(s, history) : null;
+      const priorQuarter = history.length > 0 ? findPriorQuarterStatement(s, history) : null;
+      return mapStatementToEarnings(s, { priorYear, priorQuarter });
+    });
+
+    results.sort((a, b) => a.time.localeCompare(b.time));
+    return { earnings: results, historyTimeoutRemaining: remaining };
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  const remaining =
-    timedOutAt >= 0 ? Math.max(0, codesNeedingHistory.length - timedOutAt) : 0;
-
-  const results: EarningsData[] = todayStmts.map((s) => {
-    const code = localCodeTo4(s.Code);
-    const history = historyByCode.get(code) || [];
-    const priorYear = history.length > 0 ? findPriorYearStatement(s, history) : null;
-    const priorQuarter = history.length > 0 ? findPriorQuarterStatement(s, history) : null;
-    return mapStatementToEarnings(s, { priorYear, priorQuarter });
-  });
-
-  results.sort((a, b) => a.time.localeCompare(b.time));
-  return { earnings: results, historyTimeoutRemaining: remaining };
 }
 
 // ========== 銘柄の決算履歴（過去 N 四半期推移） ==========
