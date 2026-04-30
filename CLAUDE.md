@@ -62,9 +62,17 @@ npm run lint     # ESLint チェック
 |---|---|---|---|
 | 株価スクリーニング | 実データ | `app/page.tsx`, `lib/api/jquants.ts` | 約 3,900 銘柄、6h キャッシュ |
 | 銘柄詳細 | 実データ | `app/stocks/[code]/page.tsx` | Yahoo Finance |
-| 認証設定（J-Quants + EDINET） | 実装済 | `app/settings/page.tsx` | localStorage 管理 |
-| 決算データ | 実データ | `app/earnings/`, `lib/api/edinet.ts` | EDINET API + XBRL 解析、7d/1h キャッシュ |
+| 認証設定（J-Quants 統合） | 実装済 | `app/settings/page.tsx` | 株価＋決算（TDnet）共通の APIキー、localStorage 管理 |
+| 決算データ（TDnet 決算短信） | 実データ | `app/earnings/`, `lib/api/jquants-statements.ts` | J-Quants V2 `/v2/fins/summary` (`x-api-key`)、7d/1h キャッシュ。プランによって利用可否が変わる |
 | 決算ページの範囲選択・検索・キーボード操作 | 実装済 | `app/earnings/` | モバイル対応済 |
+| 決算サプライズハイライト（YoY ベース） | 実データ | `app/earnings/page.tsx` | 営業利益 or 純利益 YoY 絶対値が閾値以上で ⚡。閾値ユーザー調整可 |
+| 決算の YoY 欠損バッジ | 実装済 | `app/earnings/page.tsx` | 決算/四半期 で null の時 "N/A" バッジ表示 |
+| 決算の伸び率ソートプリセット | 実装済 | `app/earnings/page.tsx` | 営業/純/売上 YoY の昇降順プリセットボタン |
+| YoY 抽出成功率バッジ | 実装済 | `app/earnings/page.tsx` | 前年同期 statement 引き当て成功率を可視化 |
+| 銘柄の四半期推移ビュー（過去 8Q） | 実データ | `app/api/earnings/history/`, `lib/api/jquants-statements.ts::fetchCompanyHistoryFromJQuants` | 詳細パネル内、棒グラフ＋テーブル＋通期計画進捗率 |
+| J-Quants statements キャッシュ | 実装済 | `lib/api/jquants-statements.ts` | 日付別: 過去日 7d / 当日 1h。code 別: 30d。IDトークンも 23h キャッシュ |
+| 通期計画（会社予想）抽出 | 実データ | `lib/api/jquants-statements.ts` | `Forecast*` フィールドを直接利用、進捗率計算に利用 |
+| キャッシュヒット率計測 | 実装済 | `lib/api/cache.ts::getStats` | プレフィックス別統計 |
 | お気に入り | 実装済 | `lib/utils/favorites.ts` | 単一 localStorage リスト |
 | CSV エクスポート | 実装済 | `app/components/StockTable.tsx` | |
 | 上場企業のみフィルタ | 実装済 | `lib/utils/screening.ts` | 銘柄名ベースで ETF/REIT 除外 |
@@ -78,8 +86,9 @@ npm run lint     # ESLint チェック
 | ブラウザ通知 | 未実装 | ― | |
 | Web Worker / 仮想スクロール | 未実装 | ― | 依存ライブラリもなし |
 | WebSocket / SSE | 未実装 | ― | 現状は HTTP ポーリング |
-| 適時開示（TDnet） | 未実装 | ― | `lib/types/financial.ts` に型のみ |
-| 決算サプライズのコンセンサス比較 | 未実装 | ― | |
+| 適時開示（TDnet 全件） | 部分対応 | ― | 決算短信のみ。業績修正・配当修正以外の TDnet 開示は未取得 |
+| 有価証券報告書（EDINET） | 撤去 | ― | 旧 EDINET 連携は 2026-04-30 に撤去。再接続するなら別系統で |
+| 決算サプライズのコンセンサス比較 | 未接続 | `app/earnings/page.tsx` | Con 列は UI 上「未接続」グレー表示。外部コンセンサス API 未統合 |
 
 ## アーキテクチャ
 
@@ -88,7 +97,6 @@ npm run lint     # ESLint チェック
 - **Tailwind CSS 3.4** / shadcn 風 UI プリミティブ（`app/components/ui/`）
 - **@tanstack/react-query 5** — サーバ状態管理
 - **date-fns** — 日付処理
-- **jszip** — EDINET XBRL の ZIP 展開
 - **lucide-react** — アイコン
 
 ### ディレクトリ構成
@@ -98,24 +106,24 @@ app/
   api/
     stocks/route.ts              # 株価データ取得（GET）
     update/route.ts              # 強制更新（POST）
-    earnings/route.ts            # 決算データ取得（GET）
-    edinet-doc/[docId]/route.ts  # EDINET 書類プロキシ（GET）
+    earnings/route.ts            # 決算データ取得（GET）— J-Quants TDnet
+    earnings/history/route.ts    # 銘柄別 8Q 決算履歴（GET）— J-Quants TDnet
   components/                    # 共通コンポーネント
     ui/                          # shadcn 風プリミティブ
   (各ページディレクトリ)          # /, /earnings, /pts, /realtime, /orders, /takapi, /settings, /stocks/[code]
 lib/
   api/
     cache.ts                     # TTL 付きインメモリキャッシュ
-    jquants.ts                   # フォールバックチェーン制御
-    jquants-implementation.ts    # J-Quants V1
-    jquants-v2.ts                # J-Quants V2
+    jquants.ts                   # フォールバックチェーン制御（株価）
+    jquants-implementation.ts    # J-Quants V1（株価・メール認証）
+    jquants-v2.ts                # J-Quants V2（株価・APIキー認証）
+    jquants-statements.ts        # J-Quants /fins/statements（決算 TDnet）
     yahoo-finance.ts             # Yahoo Finance Screener
-    edinet.ts                    # EDINET API V2 + XBRL 解析
   data/
     mock-earnings.ts             # 決算モックデータ（5 年分）
   types/
     stock.ts                     # Stock, ScreeningCriteria, StocksResponse
-    financial.ts                 # FinancialSummary, EarningsData, PTSData, OrderData, SegmentPerformance
+    financial.ts                 # EarningsData, CompanyHistoryEntry/Response, PTSData, OrderData, SegmentPerformance
   utils/
     screening.ts                 # フィルタ・ソート・isListedCompany 判定
     favorites.ts                 # localStorage お気に入り管理
@@ -131,8 +139,8 @@ lib/
 |---|---|---|---|
 | `/` | 株式スクリーニング（メイン） | Light | 実データ |
 | `/stocks/[code]` | 銘柄詳細 | Light | 実データ |
-| `/settings` | 認証設定（J-Quants + EDINET） | Light | ― |
-| `/earnings` | 決算データ（範囲選択・有報対応・検索） | Dark | **実データ（EDINET）** |
+| `/settings` | 認証設定（J-Quants 統合） | Light | ― |
+| `/earnings` | 決算データ（範囲選択・検索・YoY・四半期推移） | Dark | **実データ（J-Quants TDnet 決算短信）** |
 | `/pts` | PTS ランキング | Dark | モック |
 | `/realtime` | リアルタイム決算（5 秒ポーリング） | Dark | モック |
 | `/orders` | 受注データ | Dark | モック |
@@ -146,12 +154,12 @@ lib/
 |---|---|---|---|---|
 | `/api/stocks` | GET | キャッシュ済み株価 | J-Quants V1/V2 → Yahoo → モック | `x-jquants-email`, `x-jquants-password`, `x-jquants-api-key`, `x-api-base` |
 | `/api/update` | POST | キャッシュクリア＋再取得 | 同上 | 同上 |
-| `/api/earnings?date=YYYY-MM-DD&source=edinet\|mock` | GET | 決算データ | EDINET API V2 or モック | `x-edinet-api-key` |
-| `/api/edinet-doc/[docId]?type=1\|2\|5` | GET | EDINET 書類プロキシ（XBRL/PDF/CSV） | EDINET API V2 | `x-edinet-api-key` |
+| `/api/earnings?date=YYYY-MM-DD&source=tdnet\|mock\|auto` | GET | 決算データ | J-Quants V2 `/v2/fins/summary` or モック | `x-jquants-api-key`（V2 APIキー） |
+| `/api/earnings/history?code=XXXX&source=tdnet\|mock` | GET | 銘柄の過去 8 四半期推移 | J-Quants V2 `/v2/fins/summary?code=` or モック | `x-jquants-api-key` |
 
 - `/api/stocks` は `?clearCache=true` でキャッシュバイパス
 - CORS は全ルートで `Access-Control-Allow-Origin: *`
-- EDINET 関連ルートは XBRL 解析の CPU コストのため `maxDuration = 60`（秒）を設定
+- 決算ルートは銘柄別履歴フェッチの CPU コストのため `maxDuration = 60`（秒）を設定
 
 ### データソースとフォールバック
 
@@ -162,7 +170,7 @@ lib/
 3. **Yahoo Finance**（`yahoo-finance.ts`）— 無料、約 3,900 銘柄、crumb/cookie 認証
 4. **モックデータ** — 10 銘柄ハードコード（`getMockStocks()`）
 
-**決算系** — `lib/api/edinet.ts` が **EDINET API V2** から取得。XBRL を `jszip` で展開し、目的要素を抽出。モックは `lib/data/mock-earnings.ts`（5 年分・多四半期）。EDINET 失敗時にモックへ自動フォールバックしない設計（誤情報より欠損）。
+**決算系** — `lib/api/jquants-statements.ts` が **J-Quants V2 `/v2/fins/summary`** から取得（TDnet 由来の決算短信）。`x-api-key` ヘッダーに APIキーを直接付与（トークン交換不要）。日付別取得 + 銘柄別履歴取得を組み合わせて前年同期 statement を引き当てて YoY を算出。レスポンスは `data` 配列、フィールドは V2 短縮形（DiscDate/Code/Sales/OP/OdP/NP/FSales 等）。モックは `lib/data/mock-earnings.ts`（5 年分・多四半期）。`source=auto` の場合のみ取得失敗時にモックへフォールバック（warning 付き）。`source=tdnet` 指定時は明示エラー（誤情報より欠損優先）。
 
 ### キャッシュ戦略
 
@@ -173,12 +181,12 @@ lib/
 | 株価（全銘柄） | 6 時間 | `/api/stocks` |
 | 決算（過去日） | 7 日 | `/api/earnings` |
 | 決算（当日） | 1 時間 | `/api/earnings` |
-| EDINET 書類本体 | `edinet.ts` 内実装参照 | XBRL 再取得抑制 |
+| 銘柄別 statements 履歴 | 30 日 | `jquants-statements.ts::fetchStatementsByCode` |
 
 ### クライアント状態管理
 
 - **React Query** — クエリキー `['stocks']` など、`staleTime: 1分`、`refetchOnWindowFocus: false`。設定は `app/providers.tsx`
-- **localStorage** — 認証情報（`jquants_*`, `edinet_*`）、お気に入り（`stock-screening-favorites`）、表示件数設定、スクリーニング設定
+- **localStorage** — 認証情報（`jquants_*` のみ。決算データも `jquants_api_key` を共用）、お気に入り（`stock-screening-favorites`）、表示件数設定、スクリーニング設定
 - 全ページは `'use client'` ディレクティブ
 
 ### データフロー
@@ -195,9 +203,13 @@ app/page.tsx → fetchStocks()（認証ヘッダ）
 
 **決算系**
 ```
-app/earnings/page.tsx → fetch /api/earnings?date=...&source=edinet
-  → edinet.ts（認証 → 書類一覧 → XBRL 並列取得 maxConcurrent=20）
-    → jszip 展開 → 要素抽出 → FinancialSummary
+app/earnings/page.tsx → fetch /api/earnings?date=...&source=tdnet
+  → jquants-statements.ts
+    → x-api-key ヘッダーに V2 APIキーを付与（トークン交換なし）
+    → /v2/fins/summary?date=YYYY-MM-DD（日付別、ページング対応）
+    → 各銘柄の /v2/fins/summary?code=XXXX（30d キャッシュ、並列 8）
+    → 前年同期 statement を引き当てて YoY 算出（V2 短縮フィールド: Sales/OP/OdP/NP/CurPerEn 等）
+    → EarningsData[]（社名は summary に含まれないため UI 側で stockMap フォールバック）
     → memoryCache（過去日 7d / 当日 1h）
   → クライアント側フィルタ・検索・範囲選択
 ```
@@ -207,8 +219,9 @@ app/earnings/page.tsx → fetch /api/earnings?date=...&source=edinet
 - **`Stock`**（`lib/types/stock.ts`）— code, name, market, price, marketCap, volume, per, pbr, roe, dividendYield, updatedAt
 - **`ScreeningCriteria`** — 各指標のフィルタ範囲 + `favoritesOnly` + `listedOnly`
 - **`StocksResponse`** — `{ stocks, total, updatedAt }`
-- **`FinancialSummary`**（`lib/types/financial.ts`）— XBRL 抽出フィールド（売上高・営業利益・純利益・進捗率 等）
-- **`EarningsData`**, **`PTSData`**, **`OrderData`**, **`SegmentPerformance`**（`lib/types/financial.ts`）
+- **`EarningsData`**（`lib/types/financial.ts`）— 決算ページの 1 行を表す。J-Quants statements 由来の disclosureNumber/disclosureType/periodEnd を保持
+- **`CompanyHistoryEntry`**, **`CompanyHistoryResponse`**（`lib/types/financial.ts`）— 過去 8Q 推移の型
+- **`PTSData`**, **`OrderData`**, **`SegmentPerformance`**（`lib/types/financial.ts`）
 
 ## データソース別の実装上の注意点
 
@@ -223,17 +236,21 @@ app/earnings/page.tsx → fetch /api/earnings?date=...&source=edinet
 - Google ログインのみのアカウントは不可（パスワード未設定）
 - `listed/info` は ETF・REIT・インフラファンドを含む。`isListedCompany()`（`lib/utils/screening.ts`）で銘柄名ベースで除外
 
-### J-Quants V2（API キー）
+### J-Quants V2（API キー、株価専用）
 - 株価・出来高のみ提供。**PER・PBR・ROE・配当利回りは取得不可**
 - サブスクリプション期限を超えた日付で 400 が返った場合は、エラーメッセージから終了日を抽出して再試行
 
-### EDINET API V2
-- ベース URL は直近コミット（`d489982`）で修正済み。変更時は `lib/api/edinet.ts` を参照
-- API キーは金融庁 EDINET の設定画面から取得し、`/settings` ページで入力
-- 書類取得は `jszip` で ZIP 展開、XBRL からタクソノミ要素を抽出
-- 並列取得数 `maxConcurrent=20`
+### J-Quants V2 `/v2/fins/summary`（決算 TDnet）
+- ベース URL は `https://api.jquants.com/v2`（`lib/api/jquants-statements.ts` 内でハードコード）
+- 認証は **`x-api-key` ヘッダー直挿し**。トークン交換は不要（V2 で廃止）。`/settings` ページで保存した APIキーをそのまま使用
+- 2025-12-22 以降の登録アカウントは V2 のみ。V1 のメール/パスワード方式は使えない
+- レスポンスは `{ data: [...], pagination_key: ... }`、フィールドは V2 短縮形（DiscDate/DiscTime/Code/DiscNo/DocType/CurPerType/CurPerSt/CurPerEn/CurFYSt/CurFYEn/Sales/OP/OdP/NP/FSales/FOP/FOdP/FNP/DivAnn/FDivAnn）
+- 契約プランによって 403 になる場合があるため、エラー文言で明示
+- レスポンスに会社名は含まれないため、UI 側で `/api/stocks` の stockMap から補完
+- 連結/単独・JP/IFRS の差を `periodTypeKey` で吸収して前年同期を引き当てる
+- 並列取得数 `maxConcurrent=8`
 - Vercel 関数タイムアウト 60 秒が前提
-- **EDINET 取得失敗時にモックへ自動フォールバックしない**。投資判断における原則として誤情報より欠損・明示エラーを優先する
+- **`source=tdnet` 指定時は取得失敗時にモックへ自動フォールバックしない**。`source=auto` のときだけ warning 付きでフォールバックする
 
 ### 認証情報の取り扱い
 - 全てクライアント側 localStorage に保存され、リクエストヘッダ経由でサーバに渡る
@@ -243,7 +260,7 @@ app/earnings/page.tsx → fetch /api/earnings?date=...&source=edinet
 ## デプロイ設定（Vercel）
 
 - リージョン: **`hnd1`**（東京・羽田）※ `vercel.json`
-- 関数タイムアウト: `/api/earnings`, `/api/edinet-doc/[docId]` は `maxDuration = 60` 秒
+- 関数タイムアウト: `/api/earnings`, `/api/earnings/history` は `maxDuration = 60` 秒
 - セキュリティヘッダ（`next.config.mjs`）: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, XSS-Protection, Referrer-Policy
 - 画像最適化: `images.unoptimized: true`
 - CORS: 全 API ルートで `Access-Control-Allow-Origin: *`
@@ -251,12 +268,12 @@ app/earnings/page.tsx → fetch /api/earnings?date=...&source=edinet
 ## ロードマップ
 
 ### 着手中
-- EDINET 統合の安定化・XBRL 抽出フィールド拡充
-- 決算ページの UX 改善（範囲選択・有報対応・モバイル・検索・キーボード操作は完了済）
+- J-Quants TDnet 統合の安定化（YoY 引き当てロバスト性、ページング検証）
+- 決算ページの UX 改善（範囲選択・モバイル・検索・キーボード操作は完了済）
 
 ### 未着手（優先順位順）
 1. PTS データの実データ接続（SBI / ジャパンネクスト PTS）
-2. 適時開示（TDnet）接続
+2. 適時開示（決算短信以外の TDnet 開示）への拡張
 3. 決算サプライズのコンセンサス比較
 4. 受注データの実データ接続（各社 IR）
 5. お気に入りのグループ分類・複数ウォッチリスト

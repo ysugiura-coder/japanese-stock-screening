@@ -49,6 +49,7 @@ Desktop.ini
 
 # Claude Code
 .claude/
+/memory/
 
 # IDE
 .vscode/

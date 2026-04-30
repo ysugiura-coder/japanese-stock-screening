@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { EarningsData } from '@/lib/types/financial';
+import { EarningsData, CompanyHistoryResponse } from '@/lib/types/financial';
 import { Stock, StocksResponse } from '@/lib/types/stock';
 import { mockEarningsData } from '@/lib/data/mock-earnings';
 import { formatPercent, formatMarketCap, convertToCSV } from '@/lib/utils/format';
@@ -10,17 +10,21 @@ import { isListedCompany, getExchange, EXCHANGE_ORDER } from '@/lib/utils/screen
 import { getFavorites } from '@/lib/utils/favorites';
 
 type SortConfig = { key: string; direction: 'asc' | 'desc' } | null;
-type DataSource = 'auto' | 'edinet' | 'mock';
+type DataSource = 'auto' | 'tdnet' | 'mock';
 type QuickFilter =
   | 'all'
   | 'increase'
   | 'decrease'
   | 'upwardRevision'
   | 'downwardRevision'
-  | 'beatConsensus'
   | 'dividendUp';
 
-const EDINET_API_KEY_STORAGE = 'edinet_api_key';
+// サプライズ閾値のデフォルト（%）。YoY の絶対値がこの値以上で ⚡ をハイライト
+const DEFAULT_SURPRISE_THRESHOLD = 30;
+const SURPRISE_THRESHOLD_STORAGE = 'earnings_surprise_threshold';
+
+// J-Quants APIキー（リフレッシュトークン）は /settings の J-Quants 設定で保存される
+const JQUANTS_API_KEY_STORAGE = 'jquants_api_key';
 const ADV_FILTERS_STORAGE_KEY = 'earnings_adv_filters';
 
 /** /api/stocks から上場銘柄ユニバースを取得（認証ヘッダ付き） */
@@ -67,7 +71,7 @@ function getTodayStr(): string {
 
 export default function EarningsPage() {
   const [dataSource, setDataSource] = useState<DataSource>('auto');
-  const [edinetApiKey, setEdinetApiKey] = useState('');
+  const [jquantsApiKey, setJquantsApiKey] = useState('');
   const [earningsData, setEarningsData] = useState<EarningsData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -83,10 +87,7 @@ export default function EarningsPage() {
   const FILTERS_STORAGE_KEY = 'earnings_filters';
   const defaultFilters = {
     決算短信: true,
-    有報: true,
-    有報訂正: true,
     四半期: true,
-    四半期訂正: true,
     業績修正: true,
     配当修正: true,
   };
@@ -103,6 +104,12 @@ export default function EarningsPage() {
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
   const [showAdvFilters, setShowAdvFilters] = useState(false);
   const [favoritesSet, setFavoritesSet] = useState<Set<string>>(new Set());
+  const [surpriseThreshold, setSurpriseThreshold] = useState<number>(DEFAULT_SURPRISE_THRESHOLD);
+
+  // ── 四半期推移ビュー（選択銘柄の過去 8 四半期） ──
+  const [historyData, setHistoryData] = useState<CompanyHistoryResponse | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   // ── 上場銘柄ユニバース（/api/stocks と共有キャッシュ） ──
   const { data: stocksData } = useQuery<StocksResponse>({
@@ -139,17 +146,22 @@ export default function EarningsPage() {
 
   // クライアント側キャッシュ: 日付→データ をメモリに保持（1週間分）
   const clientCache = useRef<Map<string, { earnings: EarningsData[]; source: string; fetchedAt: number }>>(new Map());
-  const prefetchingRef = useRef(false);
   const lastTodayRef = useRef(getTodayStr());
 
   // localStorage からAPIキーとフィルター設定を読み込み
   useEffect(() => {
     try {
-      const savedKey = localStorage.getItem(EDINET_API_KEY_STORAGE) || '';
-      setEdinetApiKey(savedKey);
+      const savedKey = localStorage.getItem(JQUANTS_API_KEY_STORAGE) || '';
+      setJquantsApiKey(savedKey);
       const savedFilters = localStorage.getItem(FILTERS_STORAGE_KEY);
       if (savedFilters) {
-        setFilters({ ...defaultFilters, ...JSON.parse(savedFilters) });
+        const parsed = JSON.parse(savedFilters);
+        // 旧版に存在した有報/有報訂正/四半期訂正のキーは無視する
+        const filtered: Partial<typeof defaultFilters> = {};
+        for (const key of Object.keys(defaultFilters) as Array<keyof typeof defaultFilters>) {
+          if (typeof parsed[key] === 'boolean') filtered[key] = parsed[key];
+        }
+        setFilters({ ...defaultFilters, ...filtered });
       }
       const savedRange = localStorage.getItem(DATE_RANGE_STORAGE_KEY);
       if (savedRange) {
@@ -167,6 +179,11 @@ export default function EarningsPage() {
         if (typeof a.marketCapMin === 'string') setMarketCapMin(a.marketCapMin);
         if (typeof a.marketCapMax === 'string') setMarketCapMax(a.marketCapMax);
         if (typeof a.quickFilter === 'string') setQuickFilter(a.quickFilter);
+      }
+      const savedThreshold = localStorage.getItem(SURPRISE_THRESHOLD_STORAGE);
+      if (savedThreshold) {
+        const n = Number(savedThreshold);
+        if (Number.isFinite(n) && n >= 0) setSurpriseThreshold(n);
       }
       // お気に入り銘柄を読み込み
       setFavoritesSet(new Set(getFavorites()));
@@ -186,19 +203,19 @@ export default function EarningsPage() {
   // API呼び出し（キャッシュ書き込み含む）
   const fetchFromApi = useCallback(async (date: string, source: DataSource, apiKey: string, forceRefresh = false): Promise<{ earnings: EarningsData[]; source: string; warning?: string }> => {
     // モックデータを使う場合
-    const useMock = source === 'mock' || (!apiKey && source !== 'edinet');
+    const useMock = source === 'mock' || (!apiKey && source !== 'tdnet');
     if (useMock) {
       const mockData = mockEarningsData
         .filter((d) => d.date === date)
         .map((d) => ({ ...d, dataSource: 'mock' as const }));
-      return { earnings: mockData, source: 'mock', warning: !apiKey && source !== 'mock' ? 'EDINET APIキーが設定されていません。設定ページで登録してください。' : undefined };
+      return { earnings: mockData, source: 'mock', warning: !apiKey && source !== 'mock' ? 'J-Quants APIキーが設定されていません。設定ページで登録してください。' : undefined };
     }
 
     // API から取得
     const headers: Record<string, string> = {};
-    if (apiKey) headers['x-edinet-api-key'] = apiKey;
+    if (apiKey) headers['x-jquants-api-key'] = apiKey;
 
-    const params = new URLSearchParams({ date, source, parseFinancials: 'true' });
+    const params = new URLSearchParams({ date, source });
     if (forceRefresh) params.set('clearCache', 'true');
     const res = await fetch(`/api/earnings?${params}`, { headers });
     const data = await res.json();
@@ -252,32 +269,32 @@ export default function EarningsPage() {
     setSelectedCompany(null);
 
     try {
-      // 3並列ずつバッチ処理（EDINET APIの負荷を抑える）
+      // J-Quants V2 のレート制限が厳しいため、範囲は順次取得（1 日ずつ）
+      // 内部でも /v2/fins/summary を多数呼ぶので、外側で並列にすると 429 連発
       const results: { earnings: EarningsData[]; source: string; warning?: string }[] = [];
-      const BATCH_SIZE = 3;
-      for (let i = 0; i < dates.length; i += BATCH_SIZE) {
-        const batch = dates.slice(i, i + BATCH_SIZE);
-        const batchResults = await Promise.all(
-          batch.map(async (date): Promise<{ earnings: EarningsData[]; source: string; warning?: string }> => {
-            // 個別キャッシュ確認
-            if (!forceRefresh) {
-              const cached = clientCache.current.get(`${date}:${source}`);
-              if (cached) {
-                const maxAge = date < today ? 7 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
-                if (Date.now() - cached.fetchedAt < maxAge) return { earnings: cached.earnings, source: cached.source };
-              }
+      for (const date of dates) {
+        let result: { earnings: EarningsData[]; source: string; warning?: string };
+        if (!forceRefresh) {
+          const cached = clientCache.current.get(`${date}:${source}`);
+          if (cached) {
+            const maxAge = date < today ? 7 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
+            if (Date.now() - cached.fetchedAt < maxAge) {
+              result = { earnings: cached.earnings, source: cached.source };
+              results.push(result);
+              const allSoFar = results.flatMap((r) => r.earnings);
+              setEarningsData(allSoFar);
+              continue;
             }
-            const result = await fetchFromApi(date, source, apiKey, forceRefresh);
-            clientCache.current.set(`${date}:${source}`, {
-              earnings: result.earnings,
-              source: result.source,
-              fetchedAt: Date.now(),
-            });
-            return result;
-          }),
-        );
-        results.push(...batchResults);
-        // バッチ完了ごとに途中結果を表示
+          }
+        }
+        result = await fetchFromApi(date, source, apiKey, forceRefresh);
+        clientCache.current.set(`${date}:${source}`, {
+          earnings: result.earnings,
+          source: result.source,
+          fetchedAt: Date.now(),
+        });
+        results.push(result);
+        // 1 日完了ごとに途中結果を表示
         const allSoFar = results.flatMap((r) => r.earnings);
         setEarningsData(allSoFar);
       }
@@ -299,40 +316,10 @@ export default function EarningsPage() {
     }
   }, [fetchFromApi, getDatesInRange]);
 
-  // 1週間分をバックグラウンドでプリフェッチ
-  const prefetchWeek = useCallback(async (source: DataSource, apiKey: string) => {
-    if (prefetchingRef.current) return;
-    prefetchingRef.current = true;
-
-    const today = getTodayStr();
-    const dates: string[] = [];
-    for (let i = 0; i < 7; i++) {
-      dates.push(shiftDate(today, -i));
-    }
-
-    // 並列で全日付を取得（キャッシュ済みはスキップ）
-    await Promise.allSettled(
-      dates.map(async (date) => {
-        const cacheKey = `${date}:${source}`;
-        const cached = clientCache.current.get(cacheKey);
-        const maxAge = date < today ? 7 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
-        if (cached && Date.now() - cached.fetchedAt < maxAge) return; // 既にキャッシュ済み
-
-        try {
-          const result = await fetchFromApi(date, source, apiKey);
-          clientCache.current.set(cacheKey, {
-            earnings: result.earnings,
-            source: result.source,
-            fetchedAt: Date.now(),
-          });
-        } catch {
-          // プリフェッチ失敗は無視
-        }
-      }),
-    );
-
-    prefetchingRef.current = false;
-  }, [fetchFromApi]);
+  // NOTE: 1週間プリフェッチはレート制限上の負荷が大きすぎるため廃止。
+  // J-Quants V2 は秒あたりのリクエスト上限が厳しく、7日分を並列に投機取得すると
+  // 内部の /v2/fins/summary 呼び出しが束になって 429 を連発させる。
+  // サーバ側 30 日キャッシュがあるので、ユーザが日付を切り替えた時の取得で十分賄える。
 
   // フィルター変更時にlocalStorageへ保存
   useEffect(() => {
@@ -365,6 +352,16 @@ export default function EarningsPage() {
     }
   }, [listedOnly, favoritesOnly, selectedExchanges, selectedMarkets, marketCapMin, marketCapMax, quickFilter, filtersLoaded]);
 
+  // サプライズ閾値変更時に localStorage へ保存
+  useEffect(() => {
+    if (!filtersLoaded) return;
+    try {
+      localStorage.setItem(SURPRISE_THRESHOLD_STORAGE, String(surpriseThreshold));
+    } catch {
+      // localStorage使用不可
+    }
+  }, [surpriseThreshold, filtersLoaded]);
+
   // 日付範囲変更時にlocalStorageへ保存
   useEffect(() => {
     if (!filtersLoaded) return;
@@ -378,17 +375,11 @@ export default function EarningsPage() {
   // 日付範囲・ソース・APIキー変更時にデータ取得
   useEffect(() => {
     if (!filtersLoaded) return;
-    fetchEarningsRange(dateFrom, dateTo, dataSource, edinetApiKey);
-  }, [dateFrom, dateTo, dataSource, edinetApiKey, fetchEarningsRange, filtersLoaded]);
+    fetchEarningsRange(dateFrom, dateTo, dataSource, jquantsApiKey);
+  }, [dateFrom, dateTo, dataSource, jquantsApiKey, fetchEarningsRange, filtersLoaded]);
 
-  // 初回マウント時に1週間分プリフェッチ
-  useEffect(() => {
-    if (edinetApiKey || dataSource === 'mock') {
-      prefetchWeek(dataSource, edinetApiKey);
-    }
-  }, [edinetApiKey, dataSource, prefetchWeek]);
-
-  // 日付変更検知（0時を跨いだら当日分を強制リフレッシュ）
+  // 日付変更検知（0時を跨いだら当日分のクライアントキャッシュを破棄）
+  // 当日データの再取得は、ユーザがその日付を選択したタイミングで自動的に走る。
   useEffect(() => {
     const checkDateChange = () => {
       const now = getTodayStr();
@@ -399,12 +390,11 @@ export default function EarningsPage() {
             clientCache.current.delete(key);
           }
         }
-        prefetchWeek(dataSource, edinetApiKey);
       }
     };
     const interval = setInterval(checkDateChange, 30000);
     return () => clearInterval(interval);
-  }, [dataSource, edinetApiKey, prefetchWeek]);
+  }, []);
 
   // =========== 日付操作 ===========
   const rangeSpan = useCallback(() => {
@@ -440,12 +430,9 @@ export default function EarningsPage() {
     const maxCap = marketCapMax !== '' ? parseFloat(marketCapMax) : null;
 
     return earningsData.filter((item) => {
-      // 種別フィルター
+      // 種別フィルター（J-Quants /fins/statements で取得できる種類のみ）
       if (item.type === '決算' && !filters.決算短信) return false;
-      if (item.type === '有報' && !filters.有報) return false;
-      if (item.type === '有報訂正' && !filters.有報訂正) return false;
       if (item.type === '四半期' && !filters.四半期) return false;
-      if (item.type === '四半期訂正' && !filters.四半期訂正) return false;
       if (item.type === '業績修正' && !filters.業績修正) return false;
       if (item.type === '配当修正' && !filters.配当修正) return false;
 
@@ -496,9 +483,6 @@ export default function EarningsPage() {
           break;
         case 'downwardRevision':
           if (item.type !== '業績修正' || item.salesYY == null || item.salesYY >= 0) return false;
-          break;
-        case 'beatConsensus':
-          if (item.netProfitCon == null || item.netProfitCon <= 0) return false;
           break;
         case 'dividendUp':
           if (item.dividendChange == null || item.dividendChange <= 0) return false;
@@ -561,14 +545,8 @@ export default function EarningsPage() {
             修正{salesYY && salesYY > 0 ? '↑' : '↓'}
           </span>
         );
-      case '有報':
-        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400 whitespace-nowrap">有報</span>;
-      case '有報訂正':
-        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-orange-400 whitespace-nowrap">有報訂正</span>;
       case '四半期':
         return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-cyan-500/20 text-cyan-400 whitespace-nowrap">四半期</span>;
-      case '四半期訂正':
-        return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-cyan-500/20 text-orange-400 whitespace-nowrap">四半期訂正</span>;
       case '配当修正':
         return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-400 whitespace-nowrap">配当</span>;
       default:
@@ -582,64 +560,42 @@ export default function EarningsPage() {
   };
 
   const getSourceBadge = (source?: string) => {
-    if (source === 'edinet') return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">EDINET</span>;
+    if (source === 'tdnet') return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">TDnet</span>;
     if (source === 'mock') return <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-gray-500/20 text-gray-400">MOCK</span>;
     return null;
   };
 
-  // EDINET PDF閲覧リンク（APIプロキシ経由 or EDINET検索ページ）
-  const openEdinetDoc = (docId?: string) => {
-    if (!docId) return;
-    if (edinetApiKey) {
-      // APIキーがあればプロキシ経由でPDFを新タブで表示
-      const url = `/api/edinet-doc/${docId}?type=2`;
-      const w = window.open('about:blank', '_blank');
-      if (w) {
-        fetch(url, { headers: { 'x-edinet-api-key': edinetApiKey } })
-          .then((res) => {
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return res.blob();
-          })
-          .then((blob) => {
-            w.location.href = URL.createObjectURL(blob);
-          })
-          .catch(() => {
-            // フォールバック: EDINET検索ページ
-            w.location.href = 'https://disclosure2.edinet-fsa.go.jp/WEEK0010.aspx';
-          });
-      }
-    } else {
-      // APIキーなしの場合はEDINET検索ページへ
-      window.open('https://disclosure2.edinet-fsa.go.jp/WEEK0010.aspx', '_blank');
-    }
-  };
-
   const sortableThClass = 'px-3 py-2 text-left text-xs font-medium uppercase cursor-pointer hover:bg-gray-600 select-none';
 
-  const numericColumns: { key: string; label: string }[] = [
-    { key: 'salesQQ', label: '売QQ' },
-    { key: 'operatingProfitQQ', label: '営QQ' },
-    { key: 'ordinaryProfitQQ', label: '経QQ' },
-    { key: 'netProfitQQ', label: '利QQ' },
-    { key: 'salesYY', label: '売YY' },
-    { key: 'operatingProfitYY', label: '営YY' },
-    { key: 'ordinaryProfitYY', label: '経YY' },
-    { key: 'netProfitYY', label: '利YY' },
-    { key: 'salesCon', label: '売Con' },
-    { key: 'operatingProfitCon', label: '営Con' },
-    { key: 'ordinaryProfitCon', label: '経Con' },
-    { key: 'netProfitCon', label: '利Con' },
+  // kind: 'qq' = 前四半期比, 'yy' = 前年同期比, 'con' = コンセンサス比（未接続）
+  const numericColumns: { key: string; label: string; kind: 'qq' | 'yy' | 'con' }[] = [
+    { key: 'salesQQ', label: '売QQ', kind: 'qq' },
+    { key: 'operatingProfitQQ', label: '営QQ', kind: 'qq' },
+    { key: 'ordinaryProfitQQ', label: '経QQ', kind: 'qq' },
+    { key: 'netProfitQQ', label: '利QQ', kind: 'qq' },
+    { key: 'salesYY', label: '売YY', kind: 'yy' },
+    { key: 'operatingProfitYY', label: '営YY', kind: 'yy' },
+    { key: 'ordinaryProfitYY', label: '経YY', kind: 'yy' },
+    { key: 'netProfitYY', label: '利YY', kind: 'yy' },
+    { key: 'salesCon', label: '売Con', kind: 'con' },
+    { key: 'operatingProfitCon', label: '営Con', kind: 'con' },
+    { key: 'ordinaryProfitCon', label: '経Con', kind: 'con' },
+    { key: 'netProfitCon', label: '利Con', kind: 'con' },
   ];
+
+  // YoY 欠損バッジを表示すべきタイプ（決算ドキュメントで前期比較が期待される種別）
+  const expectsYoY = (type: string): boolean =>
+    type === '決算' || type === '四半期';
+
+  const disabledThClass = 'px-3 py-2 text-left text-xs font-medium uppercase text-gray-500 cursor-not-allowed select-none';
+  const CON_UNAVAILABLE_TITLE = 'コンセンサス値は未接続です';
 
   // 種別ごとの件数
   const typeCounts = useMemo(() => {
-    const counts = { 決算: 0, 有報: 0, 有報訂正: 0, 四半期: 0, 四半期訂正: 0, 業績修正: 0, 配当修正: 0 };
+    const counts = { 決算: 0, 四半期: 0, 業績修正: 0, 配当修正: 0 };
     for (const item of earningsData) {
       if (item.type === '決算') counts.決算++;
-      else if (item.type === '有報') counts.有報++;
-      else if (item.type === '有報訂正') counts.有報訂正++;
       else if (item.type === '四半期') counts.四半期++;
-      else if (item.type === '四半期訂正') counts.四半期訂正++;
       else if (item.type === '業績修正') counts.業績修正++;
       else if (item.type === '配当修正') counts.配当修正++;
     }
@@ -648,10 +604,7 @@ export default function EarningsPage() {
 
   const filterKeyToType: Record<string, keyof typeof typeCounts> = {
     決算短信: '決算',
-    有報: '有報',
-    有報訂正: '有報訂正',
     四半期: '四半期',
-    四半期訂正: '四半期訂正',
     業績修正: '業績修正',
     配当修正: '配当修正',
   };
@@ -670,6 +623,69 @@ export default function EarningsPage() {
     }
     return { 増益, 減益, 上方修正, 下方修正 };
   }, [filteredData]);
+
+  // YoY 抽出成功率: 決算・四半期 のうち、4つの YoY のうち少なくとも 1つが非 null の件数
+  // J-Quants で前年同期 statement が引き当てられなかったケースの可視化
+  const yoyStats = useMemo(() => {
+    let expected = 0;
+    let extracted = 0;
+    for (const item of earningsData) {
+      if (item.type !== '決算' && item.type !== '四半期') continue;
+      expected++;
+      if (
+        item.salesYY != null ||
+        item.operatingProfitYY != null ||
+        item.ordinaryProfitYY != null ||
+        item.netProfitYY != null
+      ) {
+        extracted++;
+      }
+    }
+    const rate = expected > 0 ? Math.round((extracted / expected) * 100) : 0;
+    return { expected, extracted, rate };
+  }, [earningsData]);
+
+  // 選択銘柄の決算履歴を取得（過去 8 四半期推移）
+  useEffect(() => {
+    if (!selectedCompany) {
+      setHistoryData(null);
+      setHistoryError(null);
+      setHistoryLoading(false);
+      return;
+    }
+    const code = selectedCompany.code;
+    const source = selectedCompany.dataSource === 'mock' || dataSource === 'mock' ? 'mock' : 'tdnet';
+    if (source === 'tdnet' && !jquantsApiKey) {
+      setHistoryData(null);
+      setHistoryError('J-Quants APIキー未設定のため履歴を取得できません');
+      setHistoryLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    setHistoryData(null);
+    const headers: Record<string, string> = {};
+    if (source === 'tdnet') headers['x-jquants-api-key'] = jquantsApiKey;
+    fetch(`/api/earnings/history?code=${code}&source=${source}`, { headers })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        return data as CompanyHistoryResponse;
+      })
+      .then((data) => {
+        if (!cancelled) setHistoryData(data);
+      })
+      .catch((e) => {
+        if (!cancelled) setHistoryError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCompany, jquantsApiKey, dataSource]);
 
   // キーボードショートカット
   useEffect(() => {
@@ -699,10 +715,27 @@ export default function EarningsPage() {
     { label: 'Yahoo', url: `https://finance.yahoo.co.jp/quote/${code}.T` },
   ];
 
-  // サプライズ判定: 純利益のコンセンサス比乖離が ±10% 以上で「要チェック」
-  const SURPRISE_THRESHOLD = 10;
-  const isSurprise = (item: EarningsData): boolean =>
-    item.netProfitCon != null && Math.abs(item.netProfitCon) >= SURPRISE_THRESHOLD;
+  // サプライズ判定: 決算・四半期で、営業利益 or 純利益の YoY 絶対値が閾値以上なら「要チェック」
+  // コンセンサス値は未接続のため、自社前年同期比での閾値判定
+  const isSurprise = useCallback((item: EarningsData): boolean => {
+    if (item.type !== '決算' && item.type !== '四半期') return false;
+    const op = item.operatingProfitYY;
+    const np = item.netProfitYY;
+    return (
+      (op != null && Math.abs(op) >= surpriseThreshold) ||
+      (np != null && Math.abs(np) >= surpriseThreshold)
+    );
+  }, [surpriseThreshold]);
+
+  // ⚡ アイコンの tooltip 用: YoY の生値を表示
+  const surpriseTitle = (item: EarningsData): string => {
+    const op = item.operatingProfitYY;
+    const np = item.netProfitYY;
+    const parts: string[] = [];
+    if (op != null) parts.push(`営業利益YoY ${formatPercent(op)}`);
+    if (np != null) parts.push(`純利益YoY ${formatPercent(np)}`);
+    return parts.length > 0 ? `サプライズ (閾値 ±${surpriseThreshold}%): ${parts.join(' / ')}` : 'サプライズ';
+  };
 
   // CSV エクスポート（投資家目線で最低限の列）
   const handleExportCSV = useCallback(() => {
@@ -717,14 +750,14 @@ export default function EarningsPage() {
         market: stock?.market || '',
         marketCapOku: stock && stock.marketCap > 0 ? Math.round(stock.marketCap / 100_000_000) : '',
         type: d.type,
+        salesQQ: d.salesQQ ?? '',
+        operatingProfitQQ: d.operatingProfitQQ ?? '',
+        ordinaryProfitQQ: d.ordinaryProfitQQ ?? '',
+        netProfitQQ: d.netProfitQQ ?? '',
         salesYY: d.salesYY ?? '',
         operatingProfitYY: d.operatingProfitYY ?? '',
         ordinaryProfitYY: d.ordinaryProfitYY ?? '',
         netProfitYY: d.netProfitYY ?? '',
-        salesCon: d.salesCon ?? '',
-        operatingProfitCon: d.operatingProfitCon ?? '',
-        ordinaryProfitCon: d.ordinaryProfitCon ?? '',
-        netProfitCon: d.netProfitCon ?? '',
         dividend: d.dividend ?? '',
         dividendChange: d.dividendChange ?? '',
         dataSource: d.dataSource ?? '',
@@ -823,7 +856,7 @@ export default function EarningsPage() {
               </button>
               <button
                 type="button"
-                onClick={() => fetchEarningsRange(dateFrom, dateTo, dataSource, edinetApiKey, true)}
+                onClick={() => fetchEarningsRange(dateFrom, dateTo, dataSource, jquantsApiKey, true)}
                 disabled={loading}
                 className="px-2 sm:px-3 py-1.5 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 rounded text-sm whitespace-nowrap"
               >
@@ -846,8 +879,8 @@ export default function EarningsPage() {
               onChange={(e) => setDataSource(e.target.value as DataSource)}
               className="px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-sm text-white"
             >
-              <option value="auto">自動（EDINET優先）</option>
-              <option value="edinet">EDINET</option>
+              <option value="auto">自動（TDnet優先）</option>
+              <option value="tdnet">TDnet（J-Quants）</option>
               <option value="mock">モックデータ</option>
             </select>
             <span className="text-xs text-gray-400 ml-auto whitespace-nowrap">
@@ -910,7 +943,6 @@ export default function EarningsPage() {
                 <option value="decrease">減益のみ（決算・利YY&lt;0）</option>
                 <option value="upwardRevision">上方修正のみ</option>
                 <option value="downwardRevision">下方修正のみ</option>
-                <option value="beatConsensus">コンセンサス超過（利Con&gt;0）</option>
                 <option value="dividendUp">配当増額</option>
               </select>
               <button
@@ -1034,9 +1066,86 @@ export default function EarningsPage() {
                     株価データが未取得のため、市場区分・時価総額フィルタは機能しません。メイン画面を開いてからお試しください。
                   </p>
                 )}
+                {/* サプライズ閾値（⚡ハイライト発火の YoY 絶対値%） */}
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-gray-400">サプライズ閾値:</span>
+                  <span className="text-gray-500">YoY ±</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={500}
+                    step={5}
+                    value={surpriseThreshold}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      if (Number.isFinite(n) && n >= 0) setSurpriseThreshold(n);
+                    }}
+                    className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white"
+                  />
+                  <span className="text-gray-500">%</span>
+                  <span className="text-gray-600 ml-2">
+                    決算・四半期で営業利益 or 純利益の YoY 絶対値が閾値以上の銘柄に ⚡ を表示
+                  </span>
+                </div>
               </div>
             )}
           </div>
+
+          {/* 伸び率ソートプリセット（時短の本丸：1クリックで「伸びた順／崩れた順」） */}
+          {earningsData.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 mb-3">
+              <span className="text-xs text-gray-400 mr-1">並び替え:</span>
+              {[
+                { key: 'operatingProfitYY', dir: 'desc' as const, label: '営業利益 伸びた順', icon: '📈' },
+                { key: 'operatingProfitYY', dir: 'asc' as const, label: '営業利益 崩れた順', icon: '📉' },
+                { key: 'netProfitYY', dir: 'desc' as const, label: '純利益 伸びた順', icon: '💰' },
+                { key: 'salesYY', dir: 'desc' as const, label: '売上 伸びた順', icon: '🛒' },
+              ].map((preset) => {
+                const active = sortConfig?.key === preset.key && sortConfig?.direction === preset.dir;
+                return (
+                  <button
+                    key={`${preset.key}-${preset.dir}`}
+                    type="button"
+                    onClick={() => setSortConfig({ key: preset.key, direction: preset.dir })}
+                    className={`px-2.5 py-1 rounded text-xs whitespace-nowrap transition-colors ${
+                      active
+                        ? 'bg-blue-600 text-white ring-1 ring-blue-400'
+                        : 'bg-gray-700 hover:bg-gray-600 text-gray-200'
+                    }`}
+                    title={`${preset.label}（${preset.key} ${preset.dir === 'desc' ? '降順' : '昇順'}）`}
+                  >
+                    <span className="mr-0.5">{preset.icon}</span>
+                    {preset.label}
+                  </button>
+                );
+              })}
+              {sortConfig && (
+                <button
+                  type="button"
+                  onClick={() => setSortConfig(null)}
+                  className="px-2 py-1 rounded text-xs bg-gray-800 border border-gray-700 text-gray-400 hover:text-white"
+                  title="ソート解除"
+                >
+                  ✕ 解除
+                </button>
+              )}
+              {/* YoY 抽出成功率 */}
+              {yoyStats.expected > 0 && (
+                <span
+                  className={`ml-auto px-2 py-1 rounded text-xs whitespace-nowrap ${
+                    yoyStats.rate >= 70
+                      ? 'bg-green-500/15 text-green-400'
+                      : yoyStats.rate >= 40
+                        ? 'bg-yellow-500/15 text-yellow-400'
+                        : 'bg-orange-500/15 text-orange-400'
+                  }`}
+                  title={`決算・四半期 ${yoyStats.expected}件のうち、YoY を少なくとも 1つ抽出できた件数。低い場合は前年同期 statement が J-Quants 履歴内に見つからなかった可能性があります。`}
+                >
+                  YoY抽出 {yoyStats.extracted}/{yoyStats.expected}件 ({yoyStats.rate}%)
+                </span>
+              )}
+            </div>
+          )}
 
           {/* サマリーバー */}
           {filteredData.length > 0 && (
@@ -1069,13 +1178,14 @@ export default function EarningsPage() {
           )}
 
           {/* APIキー未設定 案内 */}
-          {!edinetApiKey && dataSource !== 'mock' && (
+          {!jquantsApiKey && dataSource !== 'mock' && (
             <div className="bg-blue-900/30 border border-blue-600/50 rounded-lg px-4 py-3 mb-4">
               <p className="text-sm text-blue-300 mb-1">
-                EDINET APIキーを設定すると、決算短信の実データを表示できます。
+                J-Quants APIキー（TDnet 決算短信）を設定すると、決算データの実データを表示できます。
               </p>
               <p className="text-xs text-blue-400">
-                <a href="/settings" className="underline hover:text-blue-200">設定ページ</a>でAPIキーを登録してください（無料）。
+                <a href="/settings" className="underline hover:text-blue-200">設定ページ</a>で
+                J-Quants マイページのAPIキーを登録してください（/fins/statements は Standard プラン以上が必要）。
               </p>
             </div>
           )}
@@ -1101,11 +1211,21 @@ export default function EarningsPage() {
                       <th className="px-3 py-2 text-left text-xs font-medium uppercase">時刻</th>
                       <th className="px-3 py-2 text-left text-xs font-medium uppercase">コード / 企業名</th>
                       <th className="px-3 py-2 text-left text-xs font-medium uppercase">種別</th>
-                      {numericColumns.map((col) => (
-                        <th key={col.key} onClick={() => handleSort(col.key)} className={sortableThClass}>
-                          {col.label}{sortIcon(col.key)}
-                        </th>
-                      ))}
+                      {numericColumns.map((col) => {
+                        if (col.kind === 'con') {
+                          return (
+                            <th key={col.key} className={disabledThClass} title={CON_UNAVAILABLE_TITLE}>
+                              {col.label}
+                              <span className="ml-1 text-[9px] text-gray-500">未接続</span>
+                            </th>
+                          );
+                        }
+                        return (
+                          <th key={col.key} onClick={() => handleSort(col.key)} className={sortableThClass}>
+                            {col.label}{sortIcon(col.key)}
+                          </th>
+                        );
+                      })}
                       <th className="px-3 py-2 text-left text-xs font-medium uppercase">情報</th>
                     </tr>
                   </thead>
@@ -1139,9 +1259,9 @@ export default function EarningsPage() {
                           <td className="px-3 py-2 text-gray-400 whitespace-nowrap">{data.time}</td>
                           <td className="px-3 py-2 whitespace-nowrap">
                             {isFav && <span className="text-yellow-400 mr-1" title="お気に入り">★</span>}
-                            {surprise && <span className="text-yellow-300 mr-1" title={`コンセンサス比 ${formatPercent(data.netProfitCon)}`}>⚡</span>}
+                            {surprise && <span className="text-yellow-300 mr-1" title={surpriseTitle(data)}>⚡</span>}
                             <span className="text-gray-400">{data.code}</span>{' '}
-                            <span>{data.companyName}</span>
+                            <span>{data.companyName || stock?.name || '(社名未取得)'}</span>
                             {stock && (
                               <span className="ml-1 text-[10px] text-gray-500">
                                 {stock.market}{stock.marketCap > 0 ? ` / ${formatMarketCap(stock.marketCap)}` : ''}
@@ -1155,14 +1275,37 @@ export default function EarningsPage() {
                             </div>
                           </td>
                           {numericColumns.map((col) => {
+                            if (col.kind === 'con') {
+                              return (
+                                <td key={col.key} className="px-3 py-2 text-gray-600" title={CON_UNAVAILABLE_TITLE}>
+                                  —
+                                </td>
+                              );
+                            }
                             const val = data[col.key as keyof EarningsData] as number | null;
-                            return (
-                              <td key={col.key} className="px-3 py-2">
-                                {val !== null && val !== undefined ? (
+                            if (val !== null && val !== undefined) {
+                              return (
+                                <td key={col.key} className="px-3 py-2">
                                   <span className={val >= 0 ? 'text-green-400' : 'text-red-400'}>
                                     {formatPercent(val)}
                                   </span>
-                                ) : '-'}
+                                </td>
+                              );
+                            }
+                            // null の場合: YoY で期待される種別はバッジ付き
+                            const showBadge = col.kind === 'yy' && expectsYoY(data.type);
+                            return (
+                              <td key={col.key} className="px-3 py-2">
+                                {showBadge ? (
+                                  <span
+                                    className="text-gray-500 text-xs"
+                                    title="前期比較データが書類に含まれていません"
+                                  >
+                                    N/A
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-600">-</span>
+                                )}
                               </td>
                             );
                           })}
@@ -1177,15 +1320,6 @@ export default function EarningsPage() {
                                     </span>
                                   )}
                                 </span>
-                              )}
-                              {data.edinetDocId && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); openEdinetDoc(data.edinetDocId); }}
-                                  className="text-blue-400 hover:text-blue-300 underline"
-                                >
-                                  PDF
-                                </button>
                               )}
                             </div>
                           </td>
@@ -1258,9 +1392,9 @@ export default function EarningsPage() {
                       <div className="flex items-center gap-2 min-w-0">
                         {getTypeBadge(data.type, data.salesYY)}
                         {isFav && <span className="text-yellow-400 text-xs" title="お気に入り">★</span>}
-                        {surprise && <span className="text-yellow-300 text-xs" title={`コンセンサス比 ${formatPercent(data.netProfitCon)}`}>⚡</span>}
+                        {surprise && <span className="text-yellow-300 text-xs" title={surpriseTitle(data)}>⚡</span>}
                         <span className="text-gray-400 text-xs">{data.code}</span>
-                        <span className="text-sm font-medium truncate">{data.companyName}</span>
+                        <span className="text-sm font-medium truncate">{data.companyName || stock?.name || '(社名未取得)'}</span>
                       </div>
                       <span className="text-xs text-gray-500 shrink-0 ml-2">
                         {dateFrom !== dateTo && `${formatDateShort(data.date)} `}{data.time}
@@ -1278,17 +1412,24 @@ export default function EarningsPage() {
                         { label: '営YY', val: data.operatingProfitYY },
                         { label: '経YY', val: data.ordinaryProfitYY },
                         { label: '利YY', val: data.netProfitYY },
-                      ].map((col) => (
-                        <div key={col.label} className="text-center">
-                          <div className="text-gray-500">{col.label}</div>
-                          <div className={col.val !== null && col.val !== undefined
-                            ? (col.val >= 0 ? 'text-green-400 font-medium' : 'text-red-400 font-medium')
-                            : 'text-gray-600'
-                          }>
-                            {col.val !== null && col.val !== undefined ? formatPercent(col.val) : '-'}
+                      ].map((col) => {
+                        const hasVal = col.val !== null && col.val !== undefined;
+                        const showBadge = !hasVal && expectsYoY(data.type);
+                        return (
+                          <div key={col.label} className="text-center">
+                            <div className="text-gray-500">{col.label}</div>
+                            {hasVal ? (
+                              <div className={col.val! >= 0 ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
+                                {formatPercent(col.val!)}
+                              </div>
+                            ) : showBadge ? (
+                              <div className="text-gray-500" title="前期比較データが書類に含まれていません">N/A</div>
+                            ) : (
+                              <div className="text-gray-600">-</div>
+                            )}
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                     {/* 3行目: QoQ指標（値がある場合のみ） */}
                     {(data.salesQQ !== null || data.operatingProfitQQ !== null || data.ordinaryProfitQQ !== null || data.netProfitQQ !== null) && (
@@ -1332,13 +1473,14 @@ export default function EarningsPage() {
 
         {/* 詳細パネル */}
         {selectedCompany && (
+          <div className="space-y-4 sm:space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
             <div className="bg-gray-800 rounded-lg p-4 sm:p-6">
               <div className="flex items-start justify-between gap-2 mb-4">
                 <div className="flex items-center gap-2 flex-wrap">
                   {getTypeBadge(selectedCompany.type, selectedCompany.salesYY)}
                   <h2 className="text-lg sm:text-xl font-bold">
-                    {selectedCompany.code} {selectedCompany.companyName}
+                    {selectedCompany.code} {selectedCompany.companyName || stockMap.get(selectedCompany.code)?.name || '(社名未取得)'}
                   </h2>
                   {getSourceBadge(selectedCompany.dataSource)}
                 </div>
@@ -1352,10 +1494,13 @@ export default function EarningsPage() {
                 </button>
               </div>
               <div className="space-y-4">
-                {selectedCompany.edinetDocDescription && (
+                {selectedCompany.disclosureType && (
                   <div className="bg-gray-700/50 rounded p-3 text-sm">
                     <span className="text-gray-400">書類: </span>
-                    <span>{selectedCompany.edinetDocDescription}</span>
+                    <span>{selectedCompany.disclosureType}</span>
+                    {selectedCompany.disclosureNumber && (
+                      <span className="text-gray-500 ml-2 text-xs">#{selectedCompany.disclosureNumber}</span>
+                    )}
                   </div>
                 )}
                 <div>
@@ -1366,23 +1511,28 @@ export default function EarningsPage() {
                       { label: '営業利益', yy: selectedCompany.operatingProfitYY, qq: selectedCompany.operatingProfitQQ },
                       { label: '経常利益', yy: selectedCompany.ordinaryProfitYY, qq: selectedCompany.ordinaryProfitQQ },
                       { label: '純利益', yy: selectedCompany.netProfitYY, qq: selectedCompany.netProfitQQ },
-                    ].map((row) => (
-                      <div key={row.label} className="flex justify-between items-center">
-                        <span className="text-gray-400">{row.label}</span>
-                        <div className="flex gap-4">
-                          <span className="w-20 text-right">
-                            {row.yy !== null && row.yy !== undefined ? (
-                              <span className={row.yy >= 0 ? 'text-green-400' : 'text-red-400'}>{formatPercent(row.yy)}</span>
-                            ) : <span className="text-gray-600">-</span>}
-                          </span>
-                          <span className="w-20 text-right">
-                            {row.qq !== null && row.qq !== undefined ? (
-                              <span className={row.qq >= 0 ? 'text-green-400' : 'text-red-400'}>{formatPercent(row.qq)}</span>
-                            ) : <span className="text-gray-600">-</span>}
-                          </span>
+                    ].map((row) => {
+                      const yyMissingBadge = (row.yy === null || row.yy === undefined) && expectsYoY(selectedCompany.type);
+                      return (
+                        <div key={row.label} className="flex justify-between items-center">
+                          <span className="text-gray-400">{row.label}</span>
+                          <div className="flex gap-4">
+                            <span className="w-20 text-right">
+                              {row.yy !== null && row.yy !== undefined ? (
+                                <span className={row.yy >= 0 ? 'text-green-400' : 'text-red-400'}>{formatPercent(row.yy)}</span>
+                              ) : yyMissingBadge ? (
+                                <span className="text-gray-500 text-xs" title="前期比較データが書類に含まれていません">N/A</span>
+                              ) : <span className="text-gray-600">-</span>}
+                            </span>
+                            <span className="w-20 text-right">
+                              {row.qq !== null && row.qq !== undefined ? (
+                                <span className={row.qq >= 0 ? 'text-green-400' : 'text-red-400'}>{formatPercent(row.qq)}</span>
+                              ) : <span className="text-gray-600">-</span>}
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     <div className="flex justify-end gap-4 text-xs text-gray-500 border-t border-gray-700 pt-1">
                       <span className="w-20 text-right">YoY</span>
                       <span className="w-20 text-right">QoQ</span>
@@ -1410,15 +1560,6 @@ export default function EarningsPage() {
                 <div>
                   <h3 className="font-semibold mb-2 text-sm text-gray-300">外部リンク</h3>
                   <div className="flex flex-wrap gap-2">
-                    {selectedCompany.edinetDocId && (
-                      <button
-                        type="button"
-                        onClick={() => openEdinetDoc(selectedCompany.edinetDocId)}
-                        className="px-3 py-1.5 bg-green-700 hover:bg-green-600 rounded text-xs font-medium"
-                      >
-                        EDINET PDF
-                      </button>
-                    )}
                     {getExternalLinks(selectedCompany.code).map((link) => (
                       <a
                         key={link.label}
@@ -1483,17 +1624,217 @@ export default function EarningsPage() {
                 <div>
                   <h2 className="text-lg sm:text-xl font-bold mb-4">書類情報</h2>
                   <div className="space-y-3 text-sm">
-                    {selectedCompany.edinetDocDescription && (
-                      <div><span className="text-gray-400">書類種別: </span>{selectedCompany.edinetDocDescription}</div>
+                    {selectedCompany.disclosureType && (
+                      <div><span className="text-gray-400">書類種別: </span>{selectedCompany.disclosureType}</div>
                     )}
-                    <div><span className="text-gray-400">提出日時: </span>{selectedCompany.date} {selectedCompany.time}</div>
+                    {selectedCompany.disclosureNumber && (
+                      <div><span className="text-gray-400">開示番号: </span>{selectedCompany.disclosureNumber}</div>
+                    )}
+                    {selectedCompany.periodEnd && (
+                      <div><span className="text-gray-400">当期末日: </span>{selectedCompany.periodEnd}</div>
+                    )}
+                    <div><span className="text-gray-400">開示日時: </span>{selectedCompany.date} {selectedCompany.time}</div>
                   </div>
                 </div>
               )}
             </div>
+          </div>
+
+          {/* 四半期推移カード（過去 8 四半期）*/}
+          <HistoryCard
+            loading={historyLoading}
+            error={historyError}
+            data={historyData}
+            code={selectedCompany.code}
+            companyName={selectedCompany.companyName || stockMap.get(selectedCompany.code)?.name || ''}
+          />
           </div>
         )}
       </div>
     </div>
   );
 }
+
+// ========== 四半期推移カード ==========
+
+function HistoryCard({
+  loading,
+  error,
+  data,
+  code,
+  companyName,
+}: {
+  loading: boolean;
+  error: string | null;
+  data: CompanyHistoryResponse | null;
+  code: string;
+  companyName: string;
+}) {
+  // 金額フォーマット: 億円単位（J-Quants statements は円単位で返る）
+  const toOku = (v: number | null | undefined): string => {
+    if (v == null || !Number.isFinite(v)) return '-';
+    const oku = v / 100_000_000;
+    if (Math.abs(oku) >= 1000) return `${(oku / 1000).toFixed(1)}千億`;
+    if (Math.abs(oku) >= 1) return `${oku.toFixed(0)}億`;
+    return `${(oku * 10).toFixed(1)}千万`;
+  };
+
+  // 期末日の表示整形: YYYY-MM-DD → YYYY/MM
+  const fmtPeriod = (s: string): string => {
+    if (!s) return '-';
+    const [y, m] = s.split('-');
+    return y && m ? `${y.slice(2)}年${parseInt(m, 10)}月期` : s;
+  };
+
+  // 棒グラフの最大値（営業利益絶対値の最大）
+  const maxOp = data && data.history.length > 0
+    ? Math.max(1, ...data.history.map((h) => Math.abs(h.opProfitCum ?? 0)))
+    : 1;
+
+  return (
+    <div className="bg-gray-800 rounded-lg p-4 sm:p-6">
+      <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+        <h2 className="text-lg sm:text-xl font-bold">
+          四半期推移 <span className="text-sm text-gray-400 font-normal">{code} {companyName}</span>
+        </h2>
+        {data && (
+          <span className="text-xs text-gray-500">
+            取得 {data.matchedDocs}件 / 表示 {data.history.length}期
+            <span className={`ml-2 px-1.5 py-0.5 rounded ${
+              data.source === 'tdnet' ? 'bg-green-500/15 text-green-400' : 'bg-gray-500/15 text-gray-400'
+            }`}>{data.source.toUpperCase()}</span>
+          </span>
+        )}
+      </div>
+
+      {loading && (
+        <div className="flex items-center gap-3 py-6 text-gray-400 text-sm">
+          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-400" />
+          過去 8 四半期の決算短信を J-Quants から取得中...
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="py-4 text-sm text-yellow-300 bg-yellow-900/20 rounded px-3">
+          履歴取得エラー: {error}
+        </div>
+      )}
+
+      {!loading && !error && data && data.history.length === 0 && (
+        <div className="py-4 text-sm text-gray-400">
+          過去 8 四半期で該当書類が見つかりませんでした。
+          {data.source === 'mock' && '（モックデータには履歴がありません）'}
+        </div>
+      )}
+
+      {!loading && !error && data && data.history.length > 0 && (
+        <>
+          {/* 棒グラフ: 営業利益（絶対値バー + 正負の色） */}
+          <div className="mb-4">
+            <div className="text-xs text-gray-500 mb-1">営業利益（累計、単位: 億円）</div>
+            <div className="space-y-1">
+              {data.history.map((h, i) => {
+                const opOku = h.opProfitCum != null ? h.opProfitCum / 100_000_000 : null;
+                const barPct = h.opProfitCum != null ? Math.min(100, (Math.abs(h.opProfitCum) / maxOp) * 100) : 0;
+                const isNeg = (h.opProfitCum ?? 0) < 0;
+                return (
+                  <div key={`${h.disclosureNumber}-${i}`} className="flex items-center gap-2 text-xs">
+                    <span className="w-20 shrink-0 text-gray-400">{fmtPeriod(h.periodEnd || h.filingDate)}</span>
+                    <div className="flex-1 bg-gray-900 rounded h-4 relative overflow-hidden">
+                      <div
+                        className={`h-full ${isNeg ? 'bg-red-500/60' : 'bg-green-500/60'}`}
+                        style={{ width: `${barPct}%` }}
+                      />
+                    </div>
+                    <span className={`w-16 text-right shrink-0 ${isNeg ? 'text-red-400' : 'text-green-400'}`}>
+                      {opOku != null ? `${opOku.toFixed(0)}億` : '-'}
+                    </span>
+                    <span className="w-16 text-right shrink-0 text-gray-400">
+                      {h.opYY != null ? (
+                        <span className={h.opYY >= 0 ? 'text-green-400' : 'text-red-400'}>
+                          YoY{h.opYY >= 0 ? '+' : ''}{h.opYY.toFixed(1)}%
+                        </span>
+                      ) : '-'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* テーブル: 3指標 × YoY */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-700/50">
+                <tr>
+                  <th className="px-2 py-1.5 text-left font-medium">決算期</th>
+                  <th className="px-2 py-1.5 text-left font-medium">種別</th>
+                  <th className="px-2 py-1.5 text-right font-medium">売上</th>
+                  <th className="px-2 py-1.5 text-right font-medium">売YoY</th>
+                  <th className="px-2 py-1.5 text-right font-medium">営業利益</th>
+                  <th className="px-2 py-1.5 text-right font-medium">営YoY</th>
+                  <th className="px-2 py-1.5 text-right font-medium">純利益</th>
+                  <th className="px-2 py-1.5 text-right font-medium">純YoY</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700">
+                {[...data.history].reverse().map((h, i) => {
+                  const yyCell = (v: number | null) =>
+                    v != null ? (
+                      <span className={v >= 0 ? 'text-green-400' : 'text-red-400'}>
+                        {v >= 0 ? '+' : ''}{v.toFixed(1)}%
+                      </span>
+                    ) : <span className="text-gray-600">-</span>;
+                  return (
+                    <tr key={`t-${h.disclosureNumber}-${i}`} className="hover:bg-gray-700/30">
+                      <td className="px-2 py-1.5 whitespace-nowrap">{fmtPeriod(h.periodEnd || h.filingDate)}</td>
+                      <td className="px-2 py-1.5 whitespace-nowrap text-gray-400">{h.type}</td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">{toOku(h.salesCum)}</td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">{yyCell(h.salesYY)}</td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">{toOku(h.opProfitCum)}</td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">{yyCell(h.opYY)}</td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">{toOku(h.netProfitCum)}</td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">{yyCell(h.netYY)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 通期計画（もし抽出できていれば、最新行のみ表示）*/}
+          {(() => {
+            const latest = data.history[data.history.length - 1];
+            const hasForecast =
+              latest.salesForecast != null ||
+              latest.opProfitForecast != null ||
+              latest.netProfitForecast != null;
+            if (!hasForecast) return null;
+            // 進捗率 = 当期累計 / 通期計画
+            const progress = (cum: number | null, fcast: number | null | undefined): string => {
+              if (cum == null || fcast == null || fcast === 0) return '';
+              return `（進捗 ${((cum / fcast) * 100).toFixed(0)}%）`;
+            };
+            return (
+              <div className="mt-4 pt-3 border-t border-gray-700">
+                <div className="text-xs text-gray-400 mb-1">通期計画（会社予想）— {fmtPeriod(latest.periodEnd || latest.filingDate)}</div>
+                <div className="flex flex-wrap gap-4 text-xs">
+                  {latest.salesForecast != null && (
+                    <span>売上 <span className="text-gray-200">{toOku(latest.salesForecast)}</span> <span className="text-gray-500">{progress(latest.salesCum, latest.salesForecast)}</span></span>
+                  )}
+                  {latest.opProfitForecast != null && (
+                    <span>営業利益 <span className="text-gray-200">{toOku(latest.opProfitForecast)}</span> <span className="text-gray-500">{progress(latest.opProfitCum, latest.opProfitForecast)}</span></span>
+                  )}
+                  {latest.netProfitForecast != null && (
+                    <span>純利益 <span className="text-gray-200">{toOku(latest.netProfitForecast)}</span> <span className="text-gray-500">{progress(latest.netProfitCum, latest.netProfitForecast)}</span></span>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </>
+      )}
+    </div>
+  );
+}
+

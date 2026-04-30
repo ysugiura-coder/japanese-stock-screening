@@ -7,7 +7,6 @@ const PASSWORD_KEY = 'jquants_password';
 const APIKEY_KEY = 'jquants_api_key';
 const AUTH_METHOD_KEY = 'jquants_auth_method';
 const API_BASE_KEY = 'jquants_api_base';
-const EDINET_KEY = 'edinet_api_key';
 
 type AuthMethod = 'email' | 'apikey';
 
@@ -17,35 +16,29 @@ export default function SettingsPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [apiBase, setApiBase] = useState('https://api.jquants.com/v2');
-  const [edinetApiKey, setEdinetApiKey] = useState('');
+  const [apiBase, setApiBase] = useState('https://api.jquants.com/v1');
 
   const [jquantsSaved, setJquantsSaved] = useState(false);
   const [jquantsError, setJquantsError] = useState('');
-  const [edinetSaved, setEdinetSaved] = useState(false);
-  const [edinetError, setEdinetError] = useState('');
 
-  // クライアントマウント後にlocalStorageから読み込み
   useEffect(() => {
     try {
       setAuthMethod((localStorage.getItem(AUTH_METHOD_KEY) as AuthMethod) || 'apikey');
       setEmail(localStorage.getItem(EMAIL_KEY) || '');
       setPassword(localStorage.getItem(PASSWORD_KEY) || '');
       setApiKey(localStorage.getItem(APIKEY_KEY) || '');
-      setApiBase(localStorage.getItem(API_BASE_KEY) || 'https://api.jquants.com/v2');
-      setEdinetApiKey(localStorage.getItem(EDINET_KEY) || '');
+      setApiBase(localStorage.getItem(API_BASE_KEY) || 'https://api.jquants.com/v1');
     } catch { /* ignore */ }
     setMounted(true);
   }, []);
 
-  // ===== J-Quants =====
   function saveJquants() {
     setJquantsError('');
     if (authMethod === 'email') {
       if (!email.trim()) { setJquantsError('メールアドレスを入力してください'); return; }
       if (!password.trim()) { setJquantsError('パスワードを入力してください'); return; }
     } else {
-      if (!apiKey.trim()) { setJquantsError('APIキーを入力してください'); return; }
+      if (!apiKey.trim()) { setJquantsError('J-Quants V2 の APIキーを入力してください'); return; }
     }
     try {
       localStorage.setItem(AUTH_METHOD_KEY, authMethod);
@@ -63,10 +56,30 @@ export default function SettingsPage() {
     }
   }
 
-  function testJquants() {
-    saveJquants();
-    if (!jquantsError) {
-      alert('認証情報を保存しました。\nトップページの「手動更新」ボタンでデータ取得をテストしてください。');
+  async function testJquants() {
+    setJquantsError('');
+    if (authMethod !== 'apikey' || !apiKey.trim()) {
+      setJquantsError('決算データ（TDnet）の接続テストには APIキー方式が必要です。先にAPIキーを保存してください。');
+      saveJquants();
+      return;
+    }
+    try {
+      localStorage.setItem(APIKEY_KEY, apiKey.trim());
+      const today = new Date();
+      const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      const res = await fetch(`/api/earnings?date=${dateStr}&source=tdnet`, {
+        headers: { 'x-jquants-api-key': apiKey.trim() },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(`J-Quants TDnet 接続成功！ ${data.total}件の決算短信を取得しました。\n決算ページで確認してください。`);
+        setJquantsSaved(true);
+        setTimeout(() => setJquantsSaved(false), 3000);
+      } else {
+        setJquantsError(`接続エラー: ${data.error || res.statusText}`);
+      }
+    } catch (e) {
+      setJquantsError(`接続テストに失敗: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -77,62 +90,11 @@ export default function SettingsPage() {
     setEmail('');
     setPassword('');
     setApiKey('');
-    setApiBase('https://api.jquants.com/v2');
+    setApiBase('https://api.jquants.com/v1');
     setJquantsSaved(false);
     setJquantsError('');
   }
 
-  // ===== EDINET =====
-  function saveEdinet() {
-    setEdinetError('');
-    if (!edinetApiKey.trim()) {
-      setEdinetError('EDINET APIキーを入力してください');
-      return;
-    }
-    try {
-      localStorage.setItem(EDINET_KEY, edinetApiKey.trim());
-      setEdinetSaved(true);
-      setTimeout(() => setEdinetSaved(false), 3000);
-    } catch {
-      setEdinetError('保存に失敗しました');
-    }
-  }
-
-  async function testEdinet() {
-    setEdinetError('');
-    if (!edinetApiKey.trim()) {
-      setEdinetError('EDINET APIキーを入力してください');
-      return;
-    }
-    try {
-      localStorage.setItem(EDINET_KEY, edinetApiKey.trim());
-      const now = new Date();
-      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-      const res = await fetch(`/api/earnings?date=${dateStr}&source=edinet`, {
-        headers: { 'x-edinet-api-key': edinetApiKey.trim() },
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert(`EDINET接続成功！ ${data.total}件の書類を取得しました。\n決算ページで確認してください。`);
-        setEdinetSaved(true);
-        setTimeout(() => setEdinetSaved(false), 3000);
-      } else {
-        setEdinetError(`接続エラー: ${data.error || res.statusText}`);
-      }
-    } catch (e) {
-      setEdinetError(`接続テストに失敗: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  function clearEdinet() {
-    if (!confirm('EDINET APIキーを削除しますか？')) return;
-    localStorage.removeItem(EDINET_KEY);
-    setEdinetApiKey('');
-    setEdinetError('');
-    setEdinetSaved(false);
-  }
-
-  // マウント前は何も表示しない（hydrationずれ防止）
   if (!mounted) {
     return (
       <div className="min-h-screen bg-gray-100">
@@ -167,13 +129,19 @@ export default function SettingsPage() {
 
         {/* ===== J-Quants カード ===== */}
         <section className="bg-white rounded-lg shadow-md p-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-2">株価データソース（J-Quants API）</h2>
+          <h2 className="text-xl font-bold text-gray-900 mb-2">J-Quants API（株価＋決算データ）</h2>
           <p className="text-sm text-gray-600 mb-4">
-            デフォルトはYahoo Finance API（無料・設定不要）。より多くの銘柄を取得したい場合はJ-Quantsを設定してください。
+            株価スクリーニング（メイン画面）と決算データ（TDnet 決算短信、決算ページ）の両方で使います。
           </p>
 
-          <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
-            <p className="text-sm font-semibold text-green-900">現在: Yahoo Finance API（設定不要・無料）</p>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 space-y-1">
+            <p className="text-sm font-semibold text-blue-900">設定方法（J-Quants API V2）</p>
+            <ul className="text-xs text-blue-800 list-disc list-inside space-y-0.5">
+              <li>J-Quants <a href="https://jpx-jquants.com/" target="_blank" rel="noopener noreferrer" className="underline">マイページ</a>のダッシュボードで APIキーを発行</li>
+              <li>下のフォームに貼り付け、「保存」または「保存して TDnet 接続テスト」</li>
+              <li>2025-12-22 以降の登録アカウントは V2 のみ利用可（V1 のメール/パスワードは不可）</li>
+              <li>決算データ（<code>/v2/fins/summary</code>）は契約プランによって利用可否が変わります。403 が出る場合はプランをご確認ください</li>
+            </ul>
           </div>
 
           {jquantsSaved && (
@@ -196,23 +164,25 @@ export default function SettingsPage() {
                 onChange={(e) => {
                   const v = e.target.value as AuthMethod;
                   setAuthMethod(v);
-                  if (v === 'apikey') setApiBase('https://api.jquants.com/v2');
-                  else setApiBase('https://api.jquants.com/v1');
+                  setApiBase('https://api.jquants.com/v1');
                 }}
                 className={inputClass}
               >
-                <option value="apikey">APIキー（Version 2 - 推奨）</option>
-                <option value="email">メールアドレス/パスワード（Version 1）</option>
+                <option value="apikey">APIキー（V2 ダッシュボード発行・推奨）</option>
+                <option value="email">メールアドレス/パスワード（V1 旧アカウント）</option>
               </select>
+              <p className="text-xs text-gray-500 mt-1">
+                決算データ取得（TDnet）には V2 APIキー方式が必須です。
+              </p>
             </div>
 
             {authMethod === 'apikey' ? (
               <div>
-                <label htmlFor="jq-apikey" className={labelClass}>APIキー *</label>
+                <label htmlFor="jq-apikey" className={labelClass}>APIキー（V2） *</label>
                 <input
                   id="jq-apikey"
                   type="password"
-                  placeholder="your_api_key_here"
+                  placeholder="J-Quants ダッシュボードで発行した APIキー"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   className={`${inputClass} font-mono`}
@@ -254,64 +224,14 @@ export default function SettingsPage() {
                 onChange={(e) => setApiBase(e.target.value)}
                 className={inputClass}
               />
-              <p className="text-xs text-gray-500 mt-1">通常は変更不要です</p>
+              <p className="text-xs text-gray-500 mt-1">通常は変更不要です（v1 を使用）</p>
             </div>
           </div>
 
           <div className="flex gap-3 mt-6 pt-4 border-t">
             <button type="button" onClick={saveJquants} className={btnPrimary}>保存</button>
-            <button type="button" onClick={testJquants} className={btnOutline}>保存してテスト</button>
+            <button type="button" onClick={testJquants} className={btnOutline}>保存してTDnet接続テスト</button>
             <button type="button" onClick={clearJquants} className={btnOutline}>削除</button>
-          </div>
-        </section>
-
-        {/* ===== EDINET カード ===== */}
-        <section className="bg-white rounded-lg shadow-md p-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-2">決算データソース（EDINET API）</h2>
-
-          <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
-            <p className="text-sm font-semibold text-green-900 mb-1">EDINET API V2（無料）</p>
-            <p className="text-xs text-green-800">
-              金融庁EDINETのAPIで有価証券報告書・四半期報告書・決算短信の実データを取得します。
-              決算ページ（/earnings）に反映されます。
-            </p>
-          </div>
-
-          {edinetSaved && (
-            <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded mb-4">
-              <p className="text-sm font-semibold">EDINET APIキーを保存しました</p>
-            </div>
-          )}
-          {edinetError && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
-              <p className="text-sm">{edinetError}</p>
-            </div>
-          )}
-
-          <div className="space-y-4">
-            <div>
-              <label htmlFor="edinet-key" className={labelClass}>EDINET APIキー (Subscription-Key) *</label>
-              <input
-                id="edinet-key"
-                type="password"
-                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                value={edinetApiKey}
-                onChange={(e) => setEdinetApiKey(e.target.value)}
-                className={`${inputClass} font-mono`}
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                <a href="https://disclosure.edinet-fsa.go.jp" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                  EDINET公式サイト
-                </a>
-                でユーザー登録後にAPIキーを取得できます。
-              </p>
-            </div>
-          </div>
-
-          <div className="flex gap-3 mt-6 pt-4 border-t">
-            <button type="button" onClick={saveEdinet} className={btnPrimary}>保存</button>
-            <button type="button" onClick={testEdinet} className={btnOutline}>接続テスト</button>
-            <button type="button" onClick={clearEdinet} className={btnOutline}>削除</button>
           </div>
         </section>
 
@@ -320,9 +240,9 @@ export default function SettingsPage() {
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <h3 className="font-semibold text-blue-900 mb-2">使い方</h3>
             <ol className="list-decimal list-inside space-y-1 text-sm text-blue-800">
-              <li>各APIのアカウントを作成しAPIキーを取得（いずれも無料）</li>
-              <li>フォームにAPIキーを入力して「保存」をクリック</li>
-              <li>「接続テスト」でデータ取得を確認</li>
+              <li>J-Quants マイページでアカウント作成・APIキー（リフレッシュトークン）発行</li>
+              <li>上のフォームにAPIキーを入力して「保存」をクリック</li>
+              <li>「保存してTDnet接続テスト」で決算データの取得を確認</li>
               <li>各ページ（スクリーニング、決算）でデータが表示されることを確認</li>
             </ol>
           </div>
@@ -332,6 +252,7 @@ export default function SettingsPage() {
               <li>認証情報はブラウザのlocalStorageに保存されます</li>
               <li>他のブラウザやデバイスでは別途設定が必要です</li>
               <li>APIキーは他人に共有しないでください</li>
+              <li>V2 APIキーはダッシュボード上で再発行・失効できます。漏洩した可能性がある場合は速やかに再発行してください</li>
             </ul>
           </div>
         </section>
