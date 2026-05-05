@@ -11,29 +11,52 @@ import { memoryCache } from '@/lib/api/cache';
 
 const JQUANTS_V2_BASE = 'https://api.jquants.com/v2';
 
-// ========== グローバル同時実行リミッタ ==========
+// ========== グローバル同時実行リミッタ + 最小インターバル ==========
 //
 // J-Quants V2 はプラン依存のレート制限が厳しい。複数の /api/earnings ハンドラが
 // 並列に走ると内部の /v2/fins/summary 呼び出しが容易にレート制限を超える。
-// プロセス全体で同時実行数を絞るためのシンプルなセマフォ。
+// プロセス全体で同時実行数を絞るためのセマフォに加え、
+// 連続するリクエスト間に最小間隔を設けて突発的なバーストも抑える。
 
-const MAX_GLOBAL_CONCURRENT = 2;
+const MAX_GLOBAL_CONCURRENT = 1;
+const MIN_REQUEST_INTERVAL_MS = 100; // 最大 ~10 req/sec
 let globalInFlight = 0;
 const globalQueue: Array<() => void> = [];
+let lastRequestStartedAt = 0;
 
 async function acquireGlobalSlot(): Promise<void> {
   if (globalInFlight < MAX_GLOBAL_CONCURRENT) {
     globalInFlight++;
-    return;
+  } else {
+    await new Promise<void>((resolve) => globalQueue.push(resolve));
+    globalInFlight++;
   }
-  await new Promise<void>((resolve) => globalQueue.push(resolve));
-  globalInFlight++;
+  // 連続リクエスト間の最小インターバル
+  const now = Date.now();
+  const elapsed = now - lastRequestStartedAt;
+  if (elapsed < MIN_REQUEST_INTERVAL_MS) {
+    await new Promise<void>((r) => setTimeout(r, MIN_REQUEST_INTERVAL_MS - elapsed));
+  }
+  lastRequestStartedAt = Date.now();
 }
 
 function releaseGlobalSlot(): void {
   globalInFlight--;
   const next = globalQueue.shift();
   if (next) next();
+}
+
+/**
+ * 429 がリトライ予算を使い切ったときに投げる専用エラー。
+ * route ハンドラ側で「モックフォールバックせず HTTP 429 を返す」分岐に使う。
+ */
+export class JQuantsRateLimitError extends Error {
+  retryAfterSeconds: number;
+  constructor(retryAfterSeconds: number, message?: string) {
+    super(message || `J-Quants レート制限が継続中です (再試行まで ${retryAfterSeconds} 秒)`);
+    this.name = 'JQuantsRateLimitError';
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
 }
 
 // ========== 生レスポンス型（V2 短縮フィールド） ==========
@@ -72,10 +95,12 @@ interface StatementsResponseV2 {
 // 429 (Rate limit) の場合は指数バックオフでリトライ。
 // signal が abort された時点で即座に中断する（呼び出し側の deadline 用）。
 // グローバルセマフォと併用してプロセス全体の同時実行数を絞る。
+//
+// `Retry-After` ヘッダーが返ってきた場合はそれを優先する（サーバの指示に従う）。
 async function fetchWithRateLimitRetry(
   url: string,
   init: RequestInit,
-  maxRetries = 3,
+  maxRetries = 4,
 ): Promise<Response> {
   if (init.signal?.aborted) {
     throw new DOMException('Aborted before start', 'AbortError');
@@ -88,10 +113,20 @@ async function fetchWithRateLimitRetry(
         throw new DOMException('Aborted', 'AbortError');
       }
       const res = await fetch(url, init);
-      if (res.status !== 429 || attempt >= maxRetries) return res;
-      // 1s, 2s, 4s（合計最大 7 秒待機）
-      const waitMs = 1000 * Math.pow(2, attempt);
-      await new Promise((resolve, reject) => {
+      if (res.status !== 429) return res;
+      if (attempt >= maxRetries) return res; // 呼び出し側で 429 として処理させる
+      // Retry-After を優先、なければ指数バックオフ (2s, 4s, 8s, 16s)
+      const retryAfterHeader = res.headers.get('retry-after');
+      let waitMs: number;
+      if (retryAfterHeader) {
+        const sec = parseInt(retryAfterHeader, 10);
+        waitMs = Number.isFinite(sec) && sec > 0 ? Math.min(sec * 1000, 20_000) : 2000;
+      } else {
+        waitMs = 2000 * Math.pow(2, attempt); // 2s, 4s, 8s, 16s = 30s 合計
+      }
+      // レスポンス body は読まないと keep-alive 解放されない場合があるため一応消費
+      try { await res.text(); } catch { /* ignore */ }
+      await new Promise<void>((resolve, reject) => {
         const t = setTimeout(resolve, waitMs);
         init.signal?.addEventListener(
           'abort',
@@ -141,7 +176,14 @@ async function fetchSummaryPaged(
         );
       }
       if (res.status === 429) {
-        throw new Error(`J-Quants レート制限 (429): 一時的に取得量が上限超過しました。少し時間を空けて再実行してください。 ${body}`);
+        const retryAfterHeader = res.headers.get('retry-after');
+        const retrySec = retryAfterHeader && Number.isFinite(parseInt(retryAfterHeader, 10))
+          ? parseInt(retryAfterHeader, 10)
+          : 60; // デフォルト 60 秒待ちを推奨
+        throw new JQuantsRateLimitError(
+          retrySec,
+          `J-Quants レート制限 (429): 取得量が上限を超えました。${retrySec}秒ほど時間を空けて再実行してください。 ${body}`,
+        );
       }
       if (res.status === 400) {
         throw new Error(`J-Quants 400 エラー: ${body}`);
@@ -511,8 +553,10 @@ export async function fetchEarningsFromJQuants(
   apiKey: string,
   options?: { maxConcurrent?: number; batchDelayMs?: number; deadlineMs?: number },
 ): Promise<FetchEarningsResult> {
-  const maxConcurrent = options?.maxConcurrent ?? 3;
-  const batchDelayMs = options?.batchDelayMs ?? 200;
+  // J-Quants V2 のレート制限を踏まえ、グローバルセマフォ (=1) と併せて
+  // 履歴フェッチ自体の並列度も低めに設定。実効同時実行は min(maxConcurrent, グローバルセマフォ) になる。
+  const maxConcurrent = options?.maxConcurrent ?? 2;
+  const batchDelayMs = options?.batchDelayMs ?? 250;
   // デフォルト 45 秒予算（60 秒関数タイムアウト - 余白 15 秒）
   const deadlineMs = options?.deadlineMs ?? 45_000;
 

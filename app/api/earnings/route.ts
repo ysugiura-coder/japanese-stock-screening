@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchEarningsFromJQuants } from '@/lib/api/jquants-statements';
+import { fetchEarningsFromJQuants, JQuantsRateLimitError } from '@/lib/api/jquants-statements';
 import { memoryCache } from '@/lib/api/cache';
 import { mockEarningsData } from '@/lib/data/mock-earnings';
 
@@ -80,6 +80,26 @@ export async function GET(request: NextRequest) {
         return NextResponse.json(response, { headers: corsHeaders });
       } catch (error) {
         console.error('J-Quants statements fetch error:', error);
+
+        // 429 (レート制限) は一時的・再試行で解決可能。
+        // モックフォールバックすると投資家に「実データらしき何か」を見せてしまうため、
+        // 必ず 429 を伝えてフロント側で再試行 UI を出させる。
+        if (error instanceof JQuantsRateLimitError) {
+          return NextResponse.json(
+            {
+              error: error.message,
+              code: 'RATE_LIMITED',
+              retryAfter: error.retryAfterSeconds,
+            },
+            {
+              status: 429,
+              headers: {
+                ...corsHeaders,
+                'Retry-After': String(error.retryAfterSeconds),
+              },
+            },
+          );
+        }
 
         // auto: 取得失敗時はモックにフォールバックし warning を載せる
         if (source === 'auto') {

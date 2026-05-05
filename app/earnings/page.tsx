@@ -11,6 +11,20 @@ import { getFavorites } from '@/lib/utils/favorites';
 
 type SortConfig = { key: string; direction: 'asc' | 'desc' } | null;
 type DataSource = 'auto' | 'tdnet' | 'mock';
+
+/**
+ * J-Quants レート制限 (HTTP 429) を表す。
+ * fetchFromApi の throw 経路でこの型を投げると、上位 (fetchEarningsRange) が
+ * 「表示中の実データを mock で書き換えない」「retryAfter 秒後に自動再試行」分岐に入る。
+ */
+class RateLimitError extends Error {
+  retryAfter: number;
+  constructor(message: string, retryAfter: number) {
+    super(message);
+    this.name = 'RateLimitError';
+    this.retryAfter = retryAfter;
+  }
+}
 type QuickFilter =
   | 'all'
   | 'increase'
@@ -77,6 +91,10 @@ export default function EarningsPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeSource, setActiveSource] = useState<string>('mock');
   const [warning, setWarning] = useState<string | null>(null);
+  // レート制限 (429) ヒット時の状態。自動再試行の残秒数を持つ。
+  // null の間はレート制限ではない通常状態。
+  const [rateLimit, setRateLimit] = useState<{ retryAt: number; message: string } | null>(null);
+  const [now, setNow] = useState(Date.now());
   const [dateFrom, setDateFrom] = useState(getTodayStr);
   const [dateTo, setDateTo] = useState(getTodayStr);
   const [selectedCompany, setSelectedCompany] = useState<EarningsData | null>(null);
@@ -234,7 +252,19 @@ export default function EarningsPage() {
     }
 
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `API error: ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 429) {
+        const retryAfter =
+          typeof data.retryAfter === 'number' && data.retryAfter > 0
+            ? data.retryAfter
+            : Number(res.headers.get('retry-after')) || 60;
+        throw new RateLimitError(
+          data.error || 'J-Quants レート制限のため取得できませんでした',
+          retryAfter,
+        );
+      }
+      throw new Error(data.error || `API error: ${res.status}`);
+    }
     return { earnings: data.earnings || [], source: data.source || 'unknown', warning: data.warning };
   }, []);
 
@@ -319,16 +349,41 @@ export default function EarningsPage() {
       if (lastWarning) setWarning(lastWarning);
     } catch (err) {
       console.error('Earnings fetch error:', err);
-      setError(err instanceof Error ? err.message : String(err));
-      const mockData = mockEarningsData
-        .filter((d) => d.date >= from && d.date <= to)
-        .map((d) => ({ ...d, dataSource: 'mock' as const }));
-      setEarningsData(mockData);
-      setActiveSource('mock');
+      // レート制限は一時的・再試行で解決可能。
+      // 表示中データを mock で書き換えると投資判断にノイズを混ぜることになるため、
+      // 既存表示は残して別UIで「自動再試行までの残り秒数」を伝える。
+      if (err instanceof RateLimitError) {
+        const retryAt = Date.now() + err.retryAfter * 1000;
+        setRateLimit({ retryAt, message: err.message });
+        setError(null);
+        setWarning(null);
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+        const mockData = mockEarningsData
+          .filter((d) => d.date >= from && d.date <= to)
+          .map((d) => ({ ...d, dataSource: 'mock' as const }));
+        setEarningsData(mockData);
+        setActiveSource('mock');
+      }
     } finally {
       setLoading(false);
     }
   }, [fetchFromApi, getDatesInRange]);
+
+  // レート制限のカウントダウン用 1 秒タイマー（rateLimit が立っている間のみ動く）
+  useEffect(() => {
+    if (!rateLimit) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [rateLimit]);
+
+  // レート制限の retry 時刻に到達したら自動再試行
+  useEffect(() => {
+    if (!rateLimit) return;
+    if (now < rateLimit.retryAt) return;
+    setRateLimit(null);
+    fetchEarningsRange(dateFrom, dateTo, dataSource, jquantsApiKey, true);
+  }, [now, rateLimit, dateFrom, dateTo, dataSource, jquantsApiKey, fetchEarningsRange]);
 
   // NOTE: 1週間プリフェッチはレート制限上の負荷が大きすぎるため廃止。
   // J-Quants V2 は秒あたりのリクエスト上限が厳しく、7日分を並列に投機取得すると
@@ -1223,6 +1278,27 @@ export default function EarningsPage() {
               {summary.下方修正 > 0 && (
                 <span className="px-2 py-1 rounded bg-orange-500/15 text-orange-400">下方修正 {summary.下方修正}社</span>
               )}
+            </div>
+          )}
+
+          {/* レート制限カウントダウン: 既存表示はそのまま、再試行までの待機をはっきり伝える */}
+          {rateLimit && (
+            <div className="bg-amber-900/30 border border-amber-600/50 rounded-lg px-4 py-3 mb-4 text-sm text-amber-200 flex flex-wrap items-center gap-3">
+              <span className="font-medium">
+                ⏳ J-Quants レート制限中（自動で再試行します）
+              </span>
+              <span className="text-amber-300">
+                残り {Math.max(0, Math.ceil((rateLimit.retryAt - now) / 1000))} 秒
+              </span>
+              <button
+                onClick={() => {
+                  setRateLimit(null);
+                  fetchEarningsRange(dateFrom, dateTo, dataSource, jquantsApiKey, true);
+                }}
+                className="ml-auto px-3 py-1 bg-amber-600/40 hover:bg-amber-600/60 rounded text-xs"
+              >
+                今すぐ再試行
+              </button>
             </div>
           )}
 
