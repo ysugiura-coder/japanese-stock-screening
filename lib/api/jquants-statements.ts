@@ -536,31 +536,100 @@ export function mapStatementToEarnings(
 
 export interface FetchEarningsResult {
   earnings: EarningsData[];
-  /** YoY 用の履歴取得が予算切れで途中打ち切りになった場合、残った銘柄数 */
+  /** 後方互換用: incompleteCodes.length に等しい */
   historyTimeoutRemaining: number;
+  /**
+   * YoY/QoQ がまだ引き当てできなかった銘柄コード（4桁）。
+   * クライアントが /api/earnings/refill?code=XXXX で順次補完する用。
+   */
+  incompleteCodes: string[];
+}
+
+/** YYYY-MM-DD を `days` 日ずらして返す（タイムゾーン非依存） */
+function shiftYmd(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  const ny = dt.getUTCFullYear();
+  const nm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const nd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${ny}-${nm}-${nd}`;
+}
+
+/**
+ * 中心日 ± windowDays の範囲で /fins/summary?date=... を順次叩き、
+ * 全 statement を返す。`fetchStatementsByDate` 経由なので各日付は 7d キャッシュ。
+ * abort されたら即座に中断、個々のエラー（400/週末空など）は黙って飛ばす。
+ */
+async function fetchDateWindow(
+  centerDate: string,
+  windowDays: number,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<RawStatementV2[]> {
+  const out: RawStatementV2[] = [];
+  for (let off = -windowDays; off <= windowDays; off++) {
+    if (signal?.aborted) break;
+    const d = shiftYmd(centerDate, off);
+    try {
+      const stmts = await fetchStatementsByDate(d, apiKey, signal);
+      out.push(...stmts);
+    } catch (e) {
+      const isAbort = e instanceof Error && (e.name === 'AbortError' || e.message.includes('Aborted'));
+      if (isAbort) break;
+      // 400 (古すぎる日付) や週末空などは無視して継続
+    }
+  }
+  return out;
+}
+
+/** statements を 4桁 code でグルーピング */
+function groupByCode(stmts: RawStatementV2[]): Map<string, RawStatementV2[]> {
+  const map = new Map<string, RawStatementV2[]>();
+  for (const s of stmts) {
+    const code = localCodeTo4(s.Code);
+    if (!code) continue;
+    const arr = map.get(code) ?? [];
+    arr.push(s);
+    map.set(code, arr);
+  }
+  return map;
 }
 
 /**
  * 指定日の決算短信一覧を取得し、各銘柄の前年同期 statement を引き当てて YoY を算出する。
  *
- * Vercel の 60 秒関数タイムアウトを超えないように **deadline 予算** を持ち、
- * 予算が尽きた銘柄については履歴フェッチを諦めて絶対値のみで返す（YoY=null）。
- * これにより常にタイムアウト前にレスポンスが返り、サーバ側 30 日キャッシュには
- * 取れた分だけ蓄積する → 連続呼び出しで漸進的に充実する。
+ * **戦略 (date-pivot)**: 銘柄ごとに /fins/summary?code= を叩く旧方式は、
+ * N 銘柄あれば N コール必要で Vercel 60s タイムアウトに到達しがちだった。
+ * 代わりに「指定日 - 1年 ± 5日」(11コール) と「指定日 - 90日 ± 7日」(15コール) の
+ * 2つの日付窓で /fins/summary?date= をまとめ取りし、全銘柄分の前年/前四半期 statement を
+ * 一括で得る。固定コスト ~27 コールで N 銘柄をカバーでき、過去日は 7d キャッシュなので
+ * 同じ日付の再オープンや近接日付は実フェッチほぼゼロ。
+ *
+ * 窓内に前年/前四半期が見当たらない銘柄のみ、予算内で per-code フォールバックを試みる。
+ * それでも残る銘柄は incompleteCodes として返し、クライアント側で /api/earnings/refill により
+ * 漸進的に埋めてもらう。
  */
 export async function fetchEarningsFromJQuants(
   date: string,
   apiKey: string,
-  options?: { maxConcurrent?: number; batchDelayMs?: number; deadlineMs?: number },
+  options?: {
+    maxConcurrent?: number;
+    batchDelayMs?: number;
+    deadlineMs?: number;
+    priorYearWindowDays?: number;
+    priorQuarterWindowDays?: number;
+  },
 ): Promise<FetchEarningsResult> {
-  // J-Quants V2 のレート制限を踏まえ、グローバルセマフォ (=1) と併せて
-  // 履歴フェッチ自体の並列度も低めに設定。実効同時実行は min(maxConcurrent, グローバルセマフォ) になる。
+  // 残予算は per-code フォールバックでの並列処理だけに使うため、
+  // 並列度は低め（実効同時実行はグローバルセマフォ=1 で 1 のまま）。
   const maxConcurrent = options?.maxConcurrent ?? 2;
   const batchDelayMs = options?.batchDelayMs ?? 250;
   // デフォルト 45 秒予算（60 秒関数タイムアウト - 余白 15 秒）
   const deadlineMs = options?.deadlineMs ?? 45_000;
+  const priorYearWindowDays = options?.priorYearWindowDays ?? 5;       // ±5 = 11 dates
+  const priorQuarterWindowDays = options?.priorQuarterWindowDays ?? 7; // ±7 = 15 dates
 
-  // AbortController で全履歴フェッチを締切時に確実に中断
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), deadlineMs);
   const signal = controller.signal;
@@ -568,36 +637,74 @@ export async function fetchEarningsFromJQuants(
   try {
     const todayStmts = await fetchStatementsByDate(date, apiKey, signal);
     if (todayStmts.length === 0) {
-      return { earnings: [], historyTimeoutRemaining: 0 };
+      return { earnings: [], historyTimeoutRemaining: 0, incompleteCodes: [] };
     }
 
-    // 履歴フェッチが必要なのは YoY/QoQ を計算する 決算 と 四半期 のみ
+    // 履歴引き当てが必要なのは YoY/QoQ を計算する 決算 と 四半期 のみ
     const codesNeedingHistory = Array.from(
       new Set(
         todayStmts
-          .filter((s) => {
-            const t = classifyType(s.DocType);
-            return t === '決算' || t === '四半期';
-          })
+          .filter((s) => isQuarterlyOrAnnualStatement(s.DocType))
           .map((s) => localCodeTo4(s.Code))
           .filter(Boolean),
       ),
     );
 
-    const historyByCode = new Map<string, RawStatementV2[]>();
-    let processedCount = 0;
-    outer: for (let i = 0; i < codesNeedingHistory.length; i += maxConcurrent) {
+    // ── 日付窓フェッチ (固定コスト) ──
+    // - 前年窓: 約1年前 ± 5日 → YoY と 1Q QoQ 用 (1Q QoQ は前FY末を参照)
+    // - 前四半期窓: 約90日前 ± 7日 → 2Q/3Q/4Q QoQ 用
+    const priorYearCenter = shiftYmd(date, -365);
+    const priorQuarterCenter = shiftYmd(date, -90);
+
+    const priorYearWindow = signal.aborted
+      ? []
+      : await fetchDateWindow(priorYearCenter, priorYearWindowDays, apiKey, signal);
+    const priorQuarterWindow = signal.aborted
+      ? []
+      : await fetchDateWindow(priorQuarterCenter, priorQuarterWindowDays, apiKey, signal);
+
+    const priorYearByCode = groupByCode(priorYearWindow);
+    const priorQuarterByCode = groupByCode(priorQuarterWindow);
+
+    function buildPoolForCode(code: string): RawStatementV2[] {
+      const out: RawStatementV2[] = [];
+      const py = priorYearByCode.get(code);
+      if (py) out.push(...py);
+      const pq = priorQuarterByCode.get(code);
+      if (pq) out.push(...pq);
+      return out;
+    }
+
+    // ── per-code フォールバックが必要な銘柄を判定 ──
+    // 窓だけで YoY (と 2Q+ なら QoQ も) が引ければ十分。
+    // どちらかでも欠ける銘柄を per-code 補完候補にする。
+    const codesNeedingPerCode: string[] = [];
+    for (const code of codesNeedingHistory) {
+      const pool = buildPoolForCode(code);
+      const todayForCode = todayStmts.filter(
+        (s) => localCodeTo4(s.Code) === code && isQuarterlyOrAnnualStatement(s.DocType),
+      );
+      const allResolved = todayForCode.every((s) => {
+        const py = findPriorYearStatement(s, pool);
+        if (s.CurPerType === '1Q') return py !== null;
+        const pq = findPriorQuarterStatement(s, pool);
+        return py !== null && pq !== null;
+      });
+      if (!allResolved) codesNeedingPerCode.push(code);
+    }
+
+    // ── 第2段: per-code フェッチ (残予算内のみ) ──
+    const perCodeHistory = new Map<string, RawStatementV2[]>();
+    outer: for (let i = 0; i < codesNeedingPerCode.length; i += maxConcurrent) {
       if (signal.aborted) break;
-      const batch = codesNeedingHistory.slice(i, i + maxConcurrent);
+      const batch = codesNeedingPerCode.slice(i, i + maxConcurrent);
       await Promise.all(
         batch.map(async (code) => {
           try {
             const list = await fetchStatementsByCode(code, apiKey, signal);
-            historyByCode.set(code, list);
-            processedCount++;
+            perCodeHistory.set(code, list);
           } catch (e) {
-            // AbortError は予算切れ。それ以外は実エラーだが、いずれもこの銘柄は YoY なしで返す
-            historyByCode.set(code, []);
+            perCodeHistory.set(code, []);
             const isAbort = e instanceof Error && (e.name === 'AbortError' || e.message.includes('Aborted'));
             if (!isAbort) {
               console.warn(`[jq] history fetch failed for ${code}:`, e instanceof Error ? e.message : e);
@@ -606,26 +713,67 @@ export async function fetchEarningsFromJQuants(
         }),
       );
       if (signal.aborted) break outer;
-      if (i + maxConcurrent < codesNeedingHistory.length && batchDelayMs > 0) {
+      if (i + maxConcurrent < codesNeedingPerCode.length && batchDelayMs > 0) {
         await new Promise((r) => setTimeout(r, batchDelayMs));
       }
     }
 
-    const remaining = Math.max(0, codesNeedingHistory.length - processedCount);
-
+    // ── マッピング ──
+    const incompleteCodesSet = new Set<string>();
     const results: EarningsData[] = todayStmts.map((s) => {
       const code = localCodeTo4(s.Code);
-      const history = historyByCode.get(code) || [];
-      const priorYear = history.length > 0 ? findPriorYearStatement(s, history) : null;
-      const priorQuarter = history.length > 0 ? findPriorQuarterStatement(s, history) : null;
-      return mapStatementToEarnings(s, { priorYear, priorQuarter, allHistory: history });
+      const pool: RawStatementV2[] = [...buildPoolForCode(code)];
+      const perCode = perCodeHistory.get(code);
+      if (perCode) pool.push(...perCode);
+
+      const priorYear = pool.length > 0 ? findPriorYearStatement(s, pool) : null;
+      const priorQuarter = pool.length > 0 ? findPriorQuarterStatement(s, pool) : null;
+
+      // 「決算/四半期」かつ YoY が null の銘柄をクライアント補完対象に積む
+      // (YoY が取れていれば実用上のメインメトリクスは充足、QoQ 限定欠損は許容)
+      if (isQuarterlyOrAnnualStatement(s.DocType) && priorYear === null && code) {
+        incompleteCodesSet.add(code);
+      }
+
+      return mapStatementToEarnings(s, { priorYear, priorQuarter, allHistory: pool });
     });
 
     results.sort((a, b) => a.time.localeCompare(b.time));
-    return { earnings: results, historyTimeoutRemaining: remaining };
+    const incompleteCodes = Array.from(incompleteCodesSet);
+    return {
+      earnings: results,
+      historyTimeoutRemaining: incompleteCodes.length,
+      incompleteCodes,
+    };
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+/**
+ * 単一銘柄の YoY 補完用。クライアントが /api/earnings/refill 経由で並列に呼び出す想定。
+ * 当該日付の statement を取得しつつ、全履歴 (30d キャッシュ) で priorYear/priorQuarter を引き当てる。
+ */
+export async function fetchEarningsRefillFromJQuants(
+  date: string,
+  code4: string,
+  apiKey: string,
+): Promise<EarningsData[]> {
+  if (!code4) return [];
+  const [dateStmts, history] = await Promise.all([
+    fetchStatementsByDate(date, apiKey),
+    fetchStatementsByCode(code4, apiKey),
+  ]);
+  const todayForCode = dateStmts.filter((s) => localCodeTo4(s.Code) === code4);
+  if (todayForCode.length === 0) return [];
+
+  const results = todayForCode.map((s) => {
+    const priorYear = history.length > 0 ? findPriorYearStatement(s, history) : null;
+    const priorQuarter = history.length > 0 ? findPriorQuarterStatement(s, history) : null;
+    return mapStatementToEarnings(s, { priorYear, priorQuarter, allHistory: history });
+  });
+  results.sort((a, b) => a.time.localeCompare(b.time));
+  return results;
 }
 
 // ========== 銘柄の決算履歴（過去 N 四半期推移） ==========

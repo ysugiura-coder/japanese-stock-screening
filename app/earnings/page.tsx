@@ -95,6 +95,10 @@ export default function EarningsPage() {
   // null の間はレート制限ではない通常状態。
   const [rateLimit, setRateLimit] = useState<{ retryAt: number; message: string } | null>(null);
   const [now, setNow] = useState(Date.now());
+  // バックグラウンド補完の進捗 (incompleteCodes をクライアントから漸進的に埋める)
+  const [refillProgress, setRefillProgress] = useState<{ done: number; total: number } | null>(null);
+  // 進行中の refill ループを差し替えるための増分カウンタ
+  const refillRunIdRef = useRef(0);
   const [dateFrom, setDateFrom] = useState(getTodayStr);
   const [dateTo, setDateTo] = useState(getTodayStr);
   const [selectedCompany, setSelectedCompany] = useState<EarningsData | null>(null);
@@ -162,8 +166,12 @@ export default function EarningsPage() {
     return EXCHANGE_ORDER.filter((ex) => set.has(ex));
   }, [stockMap]);
 
-  // クライアント側キャッシュ: 日付→データ をメモリに保持（1週間分）
-  const clientCache = useRef<Map<string, { earnings: EarningsData[]; source: string; fetchedAt: number }>>(new Map());
+  // クライアント側キャッシュ: 日付→データ をメモリに保持（1週間分）。
+  // incompleteCodes はサーバが date-pivot で引き当てきれなかった銘柄。
+  // /api/earnings/refill で漸進補完するためにキャッシュにも持たせ、refill 完了時に空にする。
+  const clientCache = useRef<
+    Map<string, { earnings: EarningsData[]; source: string; fetchedAt: number; incompleteCodes?: string[] }>
+  >(new Map());
   const lastTodayRef = useRef(getTodayStr());
 
   // localStorage からAPIキーとフィルター設定を読み込み
@@ -219,7 +227,17 @@ export default function EarningsPage() {
   }, []);
 
   // API呼び出し（キャッシュ書き込み含む）
-  const fetchFromApi = useCallback(async (date: string, source: DataSource, apiKey: string, forceRefresh = false): Promise<{ earnings: EarningsData[]; source: string; warning?: string }> => {
+  const fetchFromApi = useCallback(async (
+    date: string,
+    source: DataSource,
+    apiKey: string,
+    forceRefresh = false,
+  ): Promise<{
+    earnings: EarningsData[];
+    source: string;
+    warning?: string;
+    incompleteCodes?: string[];
+  }> => {
     // モックデータを使う場合
     const useMock = source === 'mock' || (!apiKey && source !== 'tdnet');
     if (useMock) {
@@ -265,7 +283,12 @@ export default function EarningsPage() {
       }
       throw new Error(data.error || `API error: ${res.status}`);
     }
-    return { earnings: data.earnings || [], source: data.source || 'unknown', warning: data.warning };
+    return {
+      earnings: data.earnings || [],
+      source: data.source || 'unknown',
+      warning: data.warning,
+      incompleteCodes: Array.isArray(data.incompleteCodes) ? data.incompleteCodes : undefined,
+    };
   }, []);
 
   const MAX_RANGE_DAYS = 31;
@@ -283,10 +306,95 @@ export default function EarningsPage() {
     return dates;
   }, []);
 
+  // 単一銘柄の YoY/QoQ を refill エンドポイントから取得
+  const fetchRefill = useCallback(
+    async (date: string, code: string, apiKey: string): Promise<EarningsData[]> => {
+      const headers: Record<string, string> = {};
+      if (apiKey) headers['x-jquants-api-key'] = apiKey;
+      const res = await fetch(`/api/earnings/refill?date=${encodeURIComponent(date)}&code=${encodeURIComponent(code)}`, { headers });
+      if (res.status === 429) {
+        const data = await res.json().catch(() => ({}));
+        const retryAfter =
+          typeof data.retryAfter === 'number' && data.retryAfter > 0
+            ? data.retryAfter
+            : Number(res.headers.get('retry-after')) || 60;
+        throw new RateLimitError('refill rate limit', retryAfter);
+      }
+      if (!res.ok) return []; // 個別失敗は致命的でないので空で続行
+      const data = await res.json().catch(() => ({}));
+      return Array.isArray(data.earnings) ? (data.earnings as EarningsData[]) : [];
+    },
+    [],
+  );
+
+  // バックグラウンド補完ループ。
+  // refillRunIdRef で「直近のループのみ進める」ロックを取り、新しいフェッチが走ったら旧ループは即停止。
+  const runRefillLoop = useCallback(
+    async (jobs: { date: string; code: string }[], apiKey: string) => {
+      if (jobs.length === 0) {
+        setRefillProgress(null);
+        return;
+      }
+      const runId = ++refillRunIdRef.current;
+      setRefillProgress({ done: 0, total: jobs.length });
+
+      const rowKey = (r: { code: string; time: string; disclosureNumber?: string }) =>
+        `${r.code}:${r.disclosureNumber || r.time}`;
+
+      let done = 0;
+      for (const { date, code } of jobs) {
+        if (refillRunIdRef.current !== runId) return; // 別ループに置き換わった
+        try {
+          const refilled = await fetchRefill(date, code, apiKey);
+          if (refillRunIdRef.current !== runId) return;
+          if (refilled.length > 0) {
+            const byKey = new Map(refilled.map((r) => [rowKey(r), r]));
+            // 表示中データを置き換え (一致する code+disclosureNumber 行のみ更新)
+            setEarningsData((prev) =>
+              prev.map((row) => byKey.get(rowKey(row)) ?? row),
+            );
+            // クライアントキャッシュ側にも反映 (次回開いたときも YoY が埋まった状態)
+            const cacheKey = `${date}:tdnet`;
+            const cached = clientCache.current.get(cacheKey) || clientCache.current.get(`${date}:auto`);
+            if (cached) {
+              cached.earnings = cached.earnings.map((row) => byKey.get(rowKey(row)) ?? row);
+              if (cached.incompleteCodes) {
+                cached.incompleteCodes = cached.incompleteCodes.filter((c) => c !== code);
+              }
+            }
+          }
+        } catch (e) {
+          if (e instanceof RateLimitError) {
+            // refill 中にレート制限ヒット → 既存の rate limit UI と同じ仕組みに乗せて中断。
+            // 自動再試行で fetchEarningsRange が再開すれば、また refill ループも立ち上がる。
+            setRateLimit({
+              retryAt: Date.now() + e.retryAfter * 1000,
+              message: `バックグラウンド補完中にレート制限を検知。残り ${jobs.length - done} 銘柄は待機後に再開します。`,
+            });
+            setRefillProgress(null);
+            return;
+          }
+          // 個別エラーは無視して続行
+        }
+        done++;
+        if (refillRunIdRef.current !== runId) return;
+        setRefillProgress({ done, total: jobs.length });
+        // J-Quants 側の同時実行制限と相性を取るため間隔を空ける
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (refillRunIdRef.current === runId) setRefillProgress(null);
+    },
+    [fetchRefill],
+  );
+
   // データ取得（範囲対応・クライアントキャッシュ優先）
   const fetchEarningsRange = useCallback(async (from: string, to: string, source: DataSource, apiKey: string, forceRefresh = false) => {
     const dates = getDatesInRange(from, to);
     const today = getTodayStr();
+
+    // 新しいフェッチが始まったら、進行中の refill ループはキャンセル
+    refillRunIdRef.current++;
+    setRefillProgress(null);
 
     // 全日付キャッシュ済みかチェック
     if (!forceRefresh) {
@@ -303,6 +411,17 @@ export default function EarningsPage() {
         setError(null);
         setWarning(null);
         setSelectedCompany(null);
+        // キャッシュからの復元時も、未補完銘柄が残っていれば refill ループを再起動
+        const refillJobs: { date: string; code: string }[] = [];
+        for (const date of dates) {
+          const cached = clientCache.current.get(`${date}:${source}`);
+          if (cached?.incompleteCodes?.length) {
+            for (const c of cached.incompleteCodes) refillJobs.push({ date, code: c });
+          }
+        }
+        if (refillJobs.length > 0 && source !== 'mock' && apiKey) {
+          runRefillLoop(refillJobs, apiKey);
+        }
         return;
       }
     }
@@ -315,16 +434,31 @@ export default function EarningsPage() {
     try {
       // J-Quants V2 のレート制限が厳しいため、範囲は順次取得（1 日ずつ）
       // 内部でも /v2/fins/summary を多数呼ぶので、外側で並列にすると 429 連発
-      const results: { earnings: EarningsData[]; source: string; warning?: string }[] = [];
+      const results: {
+        date: string;
+        earnings: EarningsData[];
+        source: string;
+        warning?: string;
+        incompleteCodes?: string[];
+      }[] = [];
       for (const date of dates) {
-        let result: { earnings: EarningsData[]; source: string; warning?: string };
+        let result: {
+          earnings: EarningsData[];
+          source: string;
+          warning?: string;
+          incompleteCodes?: string[];
+        };
         if (!forceRefresh) {
           const cached = clientCache.current.get(`${date}:${source}`);
           if (cached) {
             const maxAge = date < today ? 7 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
             if (Date.now() - cached.fetchedAt < maxAge) {
-              result = { earnings: cached.earnings, source: cached.source };
-              results.push(result);
+              result = {
+                earnings: cached.earnings,
+                source: cached.source,
+                incompleteCodes: cached.incompleteCodes,
+              };
+              results.push({ date, ...result });
               const allSoFar = results.flatMap((r) => r.earnings);
               setEarningsData(allSoFar);
               continue;
@@ -336,8 +470,9 @@ export default function EarningsPage() {
           earnings: result.earnings,
           source: result.source,
           fetchedAt: Date.now(),
+          incompleteCodes: result.incompleteCodes,
         });
-        results.push(result);
+        results.push({ date, ...result });
         // 1 日完了ごとに途中結果を表示
         const allSoFar = results.flatMap((r) => r.earnings);
         setEarningsData(allSoFar);
@@ -347,6 +482,17 @@ export default function EarningsPage() {
       setEarningsData(allData);
       setActiveSource(results[0]?.source || 'unknown');
       if (lastWarning) setWarning(lastWarning);
+
+      // 全日完了後にバックグラウンド refill ループを起動
+      const refillJobs: { date: string; code: string }[] = [];
+      for (const r of results) {
+        if (r.incompleteCodes?.length) {
+          for (const c of r.incompleteCodes) refillJobs.push({ date: r.date, code: c });
+        }
+      }
+      if (refillJobs.length > 0 && source !== 'mock' && apiKey) {
+        runRefillLoop(refillJobs, apiKey);
+      }
     } catch (err) {
       console.error('Earnings fetch error:', err);
       // レート制限は一時的・再試行で解決可能。
@@ -368,7 +514,7 @@ export default function EarningsPage() {
     } finally {
       setLoading(false);
     }
-  }, [fetchFromApi, getDatesInRange]);
+  }, [fetchFromApi, getDatesInRange, runRefillLoop]);
 
   // レート制限のカウントダウン用 1 秒タイマー（rateLimit が立っている間のみ動く）
   useEffect(() => {
@@ -1299,6 +1445,23 @@ export default function EarningsPage() {
               >
                 今すぐ再試行
               </button>
+            </div>
+          )}
+
+          {/* バックグラウンド補完進捗: incompleteCodes を 1 銘柄ずつ refill 中 */}
+          {refillProgress && refillProgress.total > 0 && (
+            <div className="bg-blue-900/20 border border-blue-600/40 rounded-lg px-4 py-2 mb-4 text-sm text-blue-200 flex flex-wrap items-center gap-3">
+              <span className="inline-block h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+              <span>
+                YoY を補完中: {refillProgress.done} / {refillProgress.total} 銘柄
+              </span>
+              <div className="flex-1 min-w-[120px] h-1.5 bg-blue-900/40 rounded overflow-hidden">
+                <div
+                  className="h-full bg-blue-400 transition-all"
+                  style={{ width: `${(refillProgress.done / refillProgress.total) * 100}%` }}
+                />
+              </div>
+              <span className="text-xs text-blue-300/80">完了次第テーブルに反映されます</span>
             </div>
           )}
 

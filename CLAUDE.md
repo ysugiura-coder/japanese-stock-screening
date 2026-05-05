@@ -64,6 +64,8 @@ npm run lint     # ESLint チェック
 | 銘柄詳細 | 実データ | `app/stocks/[code]/page.tsx` | Yahoo Finance |
 | 認証設定（J-Quants 統合） | 実装済 | `app/settings/page.tsx` | 株価＋決算（TDnet）共通の APIキー、localStorage 管理 |
 | 決算データ（TDnet 決算短信） | 実データ | `app/earnings/`, `lib/api/jquants-statements.ts` | J-Quants V2 `/v2/fins/summary` (`x-api-key`)、7d/1h キャッシュ。プランによって利用可否が変わる |
+| 決算 YoY 引き当て（date-pivot） | 実装済 | `lib/api/jquants-statements.ts::fetchEarningsFromJQuants` | 銘柄毎の per-code 取得から、前年同日付窓 (±5日) + 前四半期窓 (±7日) の集約取得に変更。固定 ~27 コール、過去日 7d キャッシュで以降ほぼ無料。窓で引けない銘柄は予算内で per-code フォールバック |
+| 決算 YoY のクライアント側 refill | 実装済 | `app/api/earnings/refill/`, `app/earnings/page.tsx::runRefillLoop` | サーバが返す `incompleteCodes` を 1 銘柄ずつ並列度 1・250ms 間隔で補完。テーブルとクライアントキャッシュにマージ。レート制限ヒット時は中断して既存の自動再試行 UI に乗せる |
 | 決算ページの範囲選択・検索・キーボード操作 | 実装済 | `app/earnings/` | モバイル対応済 |
 | 決算サプライズハイライト（YoY ベース） | 実データ | `app/earnings/page.tsx` | 営業利益 or 純利益 YoY 絶対値が閾値以上で ⚡。閾値ユーザー調整可 |
 | 決算の YoY 欠損バッジ | 実装済 | `app/earnings/page.tsx` | 決算/四半期 で null の時 "N/A" バッジ表示 |
@@ -154,7 +156,8 @@ lib/
 |---|---|---|---|---|
 | `/api/stocks` | GET | キャッシュ済み株価 | J-Quants V1/V2 → Yahoo → モック | `x-jquants-email`, `x-jquants-password`, `x-jquants-api-key`, `x-api-base` |
 | `/api/update` | POST | キャッシュクリア＋再取得 | 同上 | 同上 |
-| `/api/earnings?date=YYYY-MM-DD&source=tdnet\|mock\|auto` | GET | 決算データ | J-Quants V2 `/v2/fins/summary` or モック | `x-jquants-api-key`（V2 APIキー） |
+| `/api/earnings?date=YYYY-MM-DD&source=tdnet\|mock\|auto` | GET | 決算データ（date-pivot で前年/前四半期窓を一括取得） | J-Quants V2 `/v2/fins/summary?date=` or モック | `x-jquants-api-key`（V2 APIキー） |
+| `/api/earnings/refill?date=YYYY-MM-DD&code=XXXX` | GET | 単一銘柄の YoY/QoQ をクライアントから漸進補完 | J-Quants V2 `/v2/fins/summary` (date+code) | `x-jquants-api-key` |
 | `/api/earnings/history?code=XXXX&source=tdnet\|mock` | GET | 銘柄の過去 8 四半期推移 | J-Quants V2 `/v2/fins/summary?code=` or モック | `x-jquants-api-key` |
 
 - `/api/stocks` は `?clearCache=true` でキャッシュバイパス
