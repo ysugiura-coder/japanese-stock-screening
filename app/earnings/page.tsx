@@ -659,6 +659,28 @@ export default function EarningsPage() {
     return { expected, extracted, rate };
   }, [earningsData]);
 
+  // QQ 抽出成功率: 決算・四半期 のうち、4つの QQ のうち少なくとも 1つが非 null の件数
+  // QQ は構造的に欠けやすい (1Q なら前FY末データが必要、2Q+ なら同FY内の前Qが必要、
+  // 履歴フェッチがタイムアウトすると軒並み null になる)。
+  const qqStats = useMemo(() => {
+    let expected = 0;
+    let extracted = 0;
+    for (const item of earningsData) {
+      if (item.type !== '決算' && item.type !== '四半期') continue;
+      expected++;
+      if (
+        item.salesQQ != null ||
+        item.operatingProfitQQ != null ||
+        item.ordinaryProfitQQ != null ||
+        item.netProfitQQ != null
+      ) {
+        extracted++;
+      }
+    }
+    const rate = expected > 0 ? Math.round((extracted / expected) * 100) : 0;
+    return { expected, extracted, rate };
+  }, [earningsData]);
+
   // 選択銘柄の決算履歴を取得（過去 8 四半期推移）
   useEffect(() => {
     if (!selectedCompany) {
@@ -1166,6 +1188,21 @@ export default function EarningsPage() {
                   title={`決算・四半期 ${yoyStats.expected}件のうち、YoY を少なくとも 1つ抽出できた件数。低い場合は前年同期 statement が J-Quants 履歴内に見つからなかった可能性があります。`}
                 >
                   YoY抽出 {yoyStats.extracted}/{yoyStats.expected}件 ({yoyStats.rate}%)
+                </span>
+              )}
+              {/* QQ 抽出成功率: 1Q は前FY末、2Q+は同FY内前Qの履歴が必要なため YoY より欠落しやすい */}
+              {qqStats.expected > 0 && (
+                <span
+                  className={`px-2 py-1 rounded text-xs whitespace-nowrap ${
+                    qqStats.rate >= 70
+                      ? 'bg-green-500/15 text-green-400'
+                      : qqStats.rate >= 40
+                        ? 'bg-yellow-500/15 text-yellow-400'
+                        : 'bg-orange-500/15 text-orange-400'
+                  }`}
+                  title={`決算・四半期 ${qqStats.expected}件のうち、QQ (前四半期比) を少なくとも 1つ抽出できた件数。低い場合は同FY内の直前四半期 statement (1Q なら前FY末) が J-Quants 履歴内に見つからない、もしくは履歴フェッチが Vercel 60 秒タイムアウトに到達した可能性があります。同じ日付を再度開くとサーバ側 30 日キャッシュに少しずつ蓄積され、徐々に埋まります。`}
+                >
+                  QQ抽出 {qqStats.extracted}/{qqStats.expected}件 ({qqStats.rate}%)
                 </span>
               )}
             </div>

@@ -240,6 +240,24 @@ function periodTypeKey(docType?: string): string {
   return `${m[1]}_${cons}_${m[3]}`;
 }
 
+/**
+ * FinancialStatements 系のうち、連結/単独 × 会計基準 の「同種別」だけを返すキー。
+ * 業績修正・配当修正は空文字を返すので、QoQ 用の前四半期検索でこれらを除外できる。
+ * 例: 1Q連結JP と 2Q連結JP は両方 "Cons_JP" を返す → 同種別と判定。
+ */
+function statementVariantKey(docType?: string): string {
+  if (!docType) return '';
+  const m = docType.match(/^(?:FY|1Q|2Q|3Q)FinancialStatements_(Consolidated|NonConsolidated)_(JP|IFRS|US)/);
+  if (!m) return '';
+  const cons = m[1] === 'Consolidated' ? 'Cons' : 'NonCons';
+  return `${cons}_${m[2]}`;
+}
+
+/** target が QQ/YoY 計算可能な「決算/四半期」短信か */
+function isQuarterlyOrAnnualStatement(docType?: string): boolean {
+  return statementVariantKey(docType) !== '';
+}
+
 /** 前年同期 statement を引き当てる。CurPerEn が約 1 年前のもの。 */
 function findPriorYearStatement(
   target: RawStatementV2,
@@ -269,11 +287,21 @@ function findPriorYearStatement(
   return best;
 }
 
-/** 前四半期 statement を引き当てる。同 FY 内・約 90 日前。 */
+/**
+ * 前四半期 statement を引き当てる。同 FY 内・約 90 日前。
+ *
+ * **重要**: 業績修正・配当修正書類や、target と異なる連結性/会計基準の書類を
+ * 拾わないよう、`statementVariantKey` で厳密にフィルタする。
+ * 旧実装は DocType を見ずに同FY+90日窓だけで検索していたため、
+ * 同タイミングに業績修正書類があると Sales=0/通期予想値 を「前四半期累計」として
+ * 拾い、引き算で異常な QoQ を返していた。
+ */
 function findPriorQuarterStatement(
   target: RawStatementV2,
   allByCode: RawStatementV2[],
 ): RawStatementV2 | null {
+  const targetVariant = statementVariantKey(target.DocType);
+  if (!targetVariant) return null; // target が決算/四半期短信でなければ前四半期は意味なし
   const targetEnd = target.CurPerEn;
   if (!targetEnd) return null;
   const targetEndDt = new Date(targetEnd);
@@ -285,6 +313,8 @@ function findPriorQuarterStatement(
 
   for (const s of allByCode) {
     if (s === target) continue;
+    // 業績修正・配当修正・他連結性・他会計基準は除外
+    if (statementVariantKey(s.DocType) !== targetVariant) continue;
     if (!s.CurPerEn) continue;
     if (s.CurFYEn !== targetFy) continue;
     const dt = new Date(s.CurPerEn);
@@ -298,24 +328,81 @@ function findPriorQuarterStatement(
   return best;
 }
 
+type StatementField = 'Sales' | 'OP' | 'OdP' | 'NP';
+
 /**
- * V2 の Sales/OP/OdP/NP は累計値。四半期単独値は 当期累計 - 前四半期累計。
- * 1Q は累計=単独。
+ * 任意の statement に対して、その期の **単四半期値** を返す。
+ * - 1Q なら 累計値 (= 単独値)
+ * - 2Q+ なら 当期累計 - 同FY内の直前四半期累計
+ *   (直前四半期が見つからない or 数値欠損 なら null)
+ *
+ * 旧実装は QoQ を「単四半期 − 直前累計」で算出していたため、
+ * Q3/Q4 で意味のない比率になっていた。これを単四半期 vs 単四半期 に正す。
  */
-function quarterlyValue(
-  cumCurrent: number | null,
-  prevCumInSameFy: number | null,
-  isFirstQuarter: boolean,
+function singleQuarterValueOf(
+  s: RawStatementV2,
+  allByCode: RawStatementV2[],
+  field: StatementField,
 ): number | null {
-  if (cumCurrent === null) return null;
-  if (isFirstQuarter) return cumCurrent;
-  if (prevCumInSameFy === null) return null;
-  return cumCurrent - prevCumInSameFy;
+  const cum = toNum(s[field]);
+  if (cum === null) return null;
+  if (s.CurPerType === '1Q') return cum;
+  const prior = findPriorQuarterStatement(s, allByCode);
+  if (!prior) return null;
+  const priorCum = toNum(prior[field]);
+  if (priorCum === null) return null;
+  return cum - priorCum;
+}
+
+/**
+ * 1Q 用: 直前FY末（=Q4）の単四半期値を返す。
+ * = 直前FY 通期累計 − 直前FY 3Q累計。
+ * 1Q しか手元になく前期FYの開示も無い場合は null。
+ *
+ * 連結性/会計基準は target と同種別 (Cons_JP 同士など) のみ許容する。
+ */
+function findPriorFYQ4Single(
+  target: RawStatementV2,
+  allByCode: RawStatementV2[],
+  field: StatementField,
+): number | null {
+  if (target.CurPerType !== '1Q') return null;
+  const targetVariant = statementVariantKey(target.DocType);
+  if (!targetVariant) return null;
+  const targetFyStart = target.CurFYSt;
+  if (!targetFyStart) return null;
+  const targetFyStartDt = new Date(targetFyStart);
+  if (Number.isNaN(targetFyStartDt.getTime())) return null;
+
+  let priorFy: RawStatementV2 | null = null;
+  let bestDiff = Number.POSITIVE_INFINITY;
+  for (const s of allByCode) {
+    if (s === target) continue;
+    if (!s.DocType || !TYPE_FY.test(s.DocType)) continue;
+    // 連結性/会計基準が target と一致するもののみ
+    if (statementVariantKey(s.DocType) !== targetVariant) continue;
+    if (!s.CurFYEn) continue;
+    const fyEnDt = new Date(s.CurFYEn);
+    if (Number.isNaN(fyEnDt.getTime())) continue;
+    // 直前FY末は target FY開始日の前日近辺（±5日許容）
+    const diffDays = Math.abs((targetFyStartDt.getTime() - fyEnDt.getTime()) / (24 * 60 * 60 * 1000));
+    if (diffDays <= 5 && diffDays < bestDiff) {
+      priorFy = s;
+      bestDiff = diffDays;
+    }
+  }
+  if (!priorFy) return null;
+  return singleQuarterValueOf(priorFy, allByCode, field);
 }
 
 interface MapOptions {
   priorYear?: RawStatementV2 | null;
   priorQuarter?: RawStatementV2 | null;
+  /**
+   * 当該銘柄の全 statements 履歴。単四半期値の算出 (前四半期の累計→単独変換) に必要。
+   * 渡されない場合 QoQ は null になる。
+   */
+  allHistory?: RawStatementV2[];
 }
 
 export function mapStatementToEarnings(
@@ -326,27 +413,49 @@ export function mapStatementToEarnings(
   const code = localCodeTo4(s.Code);
   const time = (s.DiscTime || '').substring(0, 5); // HH:MM
   const isFirstQuarter = s.CurPerType === '1Q';
+  const allHistory = opts.allHistory ?? [];
+  // 業績修正・配当修正のような書類は Sales/OP が予想値 or 空のため、
+  // 累計→単独変換も YoY 引き当ても意味を持たない。これらは数値列を全て null で返す。
+  const isStatement = isQuarterlyOrAnnualStatement(s.DocType);
 
-  // 累計値
-  const salesCum = toNum(s.Sales);
-  const opCum = toNum(s.OP);
-  const ordCum = toNum(s.OdP);
-  const netCum = toNum(s.NP);
+  // 累計値（YoY 計算と通期計画進捗用）。決算/四半期短信のときのみ採用。
+  const salesCum = isStatement ? toNum(s.Sales) : null;
+  const opCum = isStatement ? toNum(s.OP) : null;
+  const ordCum = isStatement ? toNum(s.OdP) : null;
+  const netCum = isStatement ? toNum(s.NP) : null;
 
-  const prevSalesCum = opts.priorYear ? toNum(opts.priorYear.Sales) : null;
-  const prevOpCum = opts.priorYear ? toNum(opts.priorYear.OP) : null;
-  const prevOrdCum = opts.priorYear ? toNum(opts.priorYear.OdP) : null;
-  const prevNetCum = opts.priorYear ? toNum(opts.priorYear.NP) : null;
+  const prevSalesCum = isStatement && opts.priorYear ? toNum(opts.priorYear.Sales) : null;
+  const prevOpCum = isStatement && opts.priorYear ? toNum(opts.priorYear.OP) : null;
+  const prevOrdCum = isStatement && opts.priorYear ? toNum(opts.priorYear.OdP) : null;
+  const prevNetCum = isStatement && opts.priorYear ? toNum(opts.priorYear.NP) : null;
 
-  const prevQSalesCum = opts.priorQuarter ? toNum(opts.priorQuarter.Sales) : null;
-  const prevQOpCum = opts.priorQuarter ? toNum(opts.priorQuarter.OP) : null;
-  const prevQOrdCum = opts.priorQuarter ? toNum(opts.priorQuarter.OdP) : null;
-  const prevQNetCum = opts.priorQuarter ? toNum(opts.priorQuarter.NP) : null;
+  // ── QoQ: 単四半期 vs 単四半期 (← 旧実装は単四半期 vs 累計で誤算出していた) ──
+  const salesSingle = isStatement ? singleQuarterValueOf(s, allHistory, 'Sales') : null;
+  const opSingle = isStatement ? singleQuarterValueOf(s, allHistory, 'OP') : null;
+  const ordSingle = isStatement ? singleQuarterValueOf(s, allHistory, 'OdP') : null;
+  const netSingle = isStatement ? singleQuarterValueOf(s, allHistory, 'NP') : null;
 
-  const salesQ = quarterlyValue(salesCum, prevQSalesCum, isFirstQuarter);
-  const opQ = quarterlyValue(opCum, prevQOpCum, isFirstQuarter);
-  const ordQ = quarterlyValue(ordCum, prevQOrdCum, isFirstQuarter);
-  const netQ = quarterlyValue(netCum, prevQNetCum, isFirstQuarter);
+  // 比較先: 通常は同FY内の直前四半期の単独値。
+  // 1Q なら 直前FY末 (Q4) の単独値を比較先にする (有用な「前期比」)。
+  // priorQuarter は呼び出し側でも variant 一致を保証するため、
+  // ここでは singleQuarterValueOf に委譲（その内部で findPriorQuarterStatement が variant 一致を強制）。
+  const priorQ = opts.priorQuarter ?? null;
+  const prevSalesSingle = !isStatement ? null
+    : isFirstQuarter
+      ? findPriorFYQ4Single(s, allHistory, 'Sales')
+      : priorQ ? singleQuarterValueOf(priorQ, allHistory, 'Sales') : null;
+  const prevOpSingle = !isStatement ? null
+    : isFirstQuarter
+      ? findPriorFYQ4Single(s, allHistory, 'OP')
+      : priorQ ? singleQuarterValueOf(priorQ, allHistory, 'OP') : null;
+  const prevOrdSingle = !isStatement ? null
+    : isFirstQuarter
+      ? findPriorFYQ4Single(s, allHistory, 'OdP')
+      : priorQ ? singleQuarterValueOf(priorQ, allHistory, 'OdP') : null;
+  const prevNetSingle = !isStatement ? null
+    : isFirstQuarter
+      ? findPriorFYQ4Single(s, allHistory, 'NP')
+      : priorQ ? singleQuarterValueOf(priorQ, allHistory, 'NP') : null;
 
   const divCurrent = toNum(s.DivAnn);
   const divForecast = toNum(s.FDivAnn);
@@ -360,10 +469,10 @@ export function mapStatementToEarnings(
     code,
     companyName: '', // V2 statements にも会社名は含まれない。UI 側で stockMap から補完
     type,
-    salesQQ: pct(salesQ, !isFirstQuarter && prevQSalesCum !== null ? prevQSalesCum : null),
-    operatingProfitQQ: pct(opQ, !isFirstQuarter && prevQOpCum !== null ? prevQOpCum : null),
-    ordinaryProfitQQ: pct(ordQ, !isFirstQuarter && prevQOrdCum !== null ? prevQOrdCum : null),
-    netProfitQQ: pct(netQ, !isFirstQuarter && prevQNetCum !== null ? prevQNetCum : null),
+    salesQQ: pct(salesSingle, prevSalesSingle),
+    operatingProfitQQ: pct(opSingle, prevOpSingle),
+    ordinaryProfitQQ: pct(ordSingle, prevOrdSingle),
+    netProfitQQ: pct(netSingle, prevNetSingle),
     salesYY: pct(salesCum, prevSalesCum),
     operatingProfitYY: pct(opCum, prevOpCum),
     ordinaryProfitYY: pct(ordCum, prevOrdCum),
@@ -465,7 +574,7 @@ export async function fetchEarningsFromJQuants(
       const history = historyByCode.get(code) || [];
       const priorYear = history.length > 0 ? findPriorYearStatement(s, history) : null;
       const priorQuarter = history.length > 0 ? findPriorQuarterStatement(s, history) : null;
-      return mapStatementToEarnings(s, { priorYear, priorQuarter });
+      return mapStatementToEarnings(s, { priorYear, priorQuarter, allHistory: history });
     });
 
     results.sort((a, b) => a.time.localeCompare(b.time));
@@ -513,7 +622,6 @@ export async function fetchCompanyHistoryFromJQuants(
 
   const entries: CompanyHistoryEntry[] = recent.map((s) => {
     const priorYear = findPriorYearStatement(s, ordered);
-    const priorQuarter = findPriorQuarterStatement(s, ordered);
 
     const salesCum = toNum(s.Sales);
     const opCum = toNum(s.OP);
@@ -524,13 +632,22 @@ export async function fetchCompanyHistoryFromJQuants(
     const prevNetCum = priorYear ? toNum(priorYear.NP) : null;
 
     const isFirstQuarter = s.CurPerType === '1Q';
-    const prevQSalesCum = priorQuarter ? toNum(priorQuarter.Sales) : null;
-    const prevQOpCum = priorQuarter ? toNum(priorQuarter.OP) : null;
-    const prevQNetCum = priorQuarter ? toNum(priorQuarter.NP) : null;
 
-    const salesQ = quarterlyValue(salesCum, prevQSalesCum, isFirstQuarter);
-    const opQ = quarterlyValue(opCum, prevQOpCum, isFirstQuarter);
-    const netQ = quarterlyValue(netCum, prevQNetCum, isFirstQuarter);
+    // QoQ: 単四半期 vs 単四半期 (同FY内の前Q、もしくは1Qなら前FYのQ4)
+    const salesSingle = singleQuarterValueOf(s, ordered, 'Sales');
+    const opSingle = singleQuarterValueOf(s, ordered, 'OP');
+    const netSingle = singleQuarterValueOf(s, ordered, 'NP');
+
+    const priorQuarter = findPriorQuarterStatement(s, ordered);
+    const prevSalesSingle = isFirstQuarter
+      ? findPriorFYQ4Single(s, ordered, 'Sales')
+      : priorQuarter ? singleQuarterValueOf(priorQuarter, ordered, 'Sales') : null;
+    const prevOpSingle = isFirstQuarter
+      ? findPriorFYQ4Single(s, ordered, 'OP')
+      : priorQuarter ? singleQuarterValueOf(priorQuarter, ordered, 'OP') : null;
+    const prevNetSingle = isFirstQuarter
+      ? findPriorFYQ4Single(s, ordered, 'NP')
+      : priorQuarter ? singleQuarterValueOf(priorQuarter, ordered, 'NP') : null;
 
     return {
       periodEnd: s.CurPerEn || '',
@@ -544,9 +661,9 @@ export async function fetchCompanyHistoryFromJQuants(
       salesYY: pct(salesCum, prevSalesCum),
       opYY: pct(opCum, prevOpCum),
       netYY: pct(netCum, prevNetCum),
-      salesQQ: pct(salesQ, !isFirstQuarter && prevQSalesCum !== null ? prevQSalesCum : null),
-      opQQ: pct(opQ, !isFirstQuarter && prevQOpCum !== null ? prevQOpCum : null),
-      netQQ: pct(netQ, !isFirstQuarter && prevQNetCum !== null ? prevQNetCum : null),
+      salesQQ: pct(salesSingle, prevSalesSingle),
+      opQQ: pct(opSingle, prevOpSingle),
+      netQQ: pct(netSingle, prevNetSingle),
       salesForecast: toNum(s.FSales),
       opProfitForecast: toNum(s.FOP),
       netProfitForecast: toNum(s.FNP),
