@@ -6,6 +6,12 @@ import { formatPercent } from '@/lib/utils/format';
 
 type SortConfig = { key: string; direction: 'asc' | 'desc' } | null;
 
+// モックデータの最新日付（state 初期化用）。mockOrderData 定義より後で計算するため lazy init を使う
+function getLatestMockDate(data: OrderData[]): string {
+  const dates = [...new Set(data.map((d) => d.date))].sort();
+  return dates[dates.length - 1] || new Date().toISOString().split('T')[0];
+}
+
 // モックデータ（複数日に分散）
 const mockOrderData: OrderData[] = [
   // 2026-02-10
@@ -196,13 +202,16 @@ const mockOrderData: OrderData[] = [
 ];
 
 export default function OrdersPage() {
-  const [selectedDate, setSelectedDate] = useState('2026-02-10');
+  // モックデータの最新日付を初期値に。ハードコード '2026-02-10' だと将来的に古いデータが見えてしまうため
+  const [selectedDate, setSelectedDate] = useState(() => getLatestMockDate(mockOrderData));
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
 
   // データに含まれる日付一覧（ソート済み）
   const availableDates = useMemo(() => {
     return [...new Set(mockOrderData.map((d) => d.date))].sort();
   }, []);
+
+  const latestAvailable = availableDates[availableDates.length - 1] || '';
 
   // 選択日付でフィルタ
   const filteredData = useMemo(() => {
@@ -274,13 +283,25 @@ export default function OrdersPage() {
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       <div className="max-w-7xl mx-auto px-4 py-8">
-        {/* ヘッダー */}
-        <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">受注一覧</h1>
-          <div className="flex items-center gap-2">
+        {/* MOCK 警告バナー: 投資判断には使えないことを明示 */}
+        <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded text-sm text-yellow-200">
+          <strong className="font-medium">⚠ モックデータ表示中</strong>
+          <span className="ml-2 text-yellow-100/80">
+            受注データは実データ未接続です。表示中の数値はサンプルであり、投資判断に使用しないでください。
+          </span>
+        </div>
+
+        {/* ヘッダー: モバイル対応のため flex-wrap */}
+        <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            受注一覧
+            <span className="inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-gray-500/30 text-gray-300">MOCK</span>
+          </h1>
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={goToPrevDate}
               className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+              title="データのある前の日付へ"
             >
               ◀ 前日
             </button>
@@ -293,6 +314,7 @@ export default function OrdersPage() {
             <button
               onClick={goToNextDate}
               className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+              title="データのある次の日付へ"
             >
               翌日 ▶
             </button>
@@ -302,6 +324,15 @@ export default function OrdersPage() {
             >
               今日
             </button>
+            {latestAvailable && (
+              <button
+                onClick={() => setSelectedDate(latestAvailable)}
+                className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                title={`モック最新: ${latestAvailable}`}
+              >
+                最新データ
+              </button>
+            )}
             <span className="text-xs text-gray-400 ml-2">
               ({filteredData.length}件 / 全{availableDates.length}日分)
             </span>
@@ -341,7 +372,18 @@ export default function OrdersPage() {
                 {sortedData.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
-                      この日付のデータはありません
+                      <div>この日付（{selectedDate}）にはモックデータがありません</div>
+                      {latestAvailable && (
+                        <button
+                          onClick={() => setSelectedDate(latestAvailable)}
+                          className="mt-3 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm text-white"
+                        >
+                          最新データの日付（{latestAvailable}）を表示
+                        </button>
+                      )}
+                      <div className="mt-3 text-xs text-gray-500">
+                        ※ 受注データは実データ未接続。本機能は今後 各社IRから実データを取り込む予定です。
+                      </div>
                     </td>
                   </tr>
                 ) : (
