@@ -58,8 +58,11 @@ export async function GET(request: NextRequest) {
         const { earnings, incompleteCodes } = await fetchEarningsFromJQuants(date, apiKey, {
           maxConcurrent: 3,
           batchDelayMs: 200,
-          // Vercel 60s タイムアウト - 余白 15s = 45s 予算
-          deadlineMs: 45_000,
+          // Vercel 60s タイムアウト - 余白 35s = 25s 予算。
+          // 余白を厚めに取るのは、abort 後の results.map / JSON シリアライズ /
+          // Vercel 側のレスポンス finalize で 10〜20s 食う劣化ケースを避けるため。
+          // 残りの YoY/QoQ 引き当てはクライアント側 refill ループに委譲する。
+          deadlineMs: 25_000,
         });
         const earningsWithSource = earnings.map((e) => ({
           ...e,

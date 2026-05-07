@@ -97,10 +97,16 @@ interface StatementsResponseV2 {
 // グローバルセマフォと併用してプロセス全体の同時実行数を絞る。
 //
 // `Retry-After` ヘッダーが返ってきた場合はそれを優先する（サーバの指示に従う）。
+//
+// **maxRetries=2 の根拠**: バックオフは 2s, 4s で最大 6s。Vercel 60s 関数タイムアウトの
+// 中で 1 回の 429 リトライに 30s も使うと（2+4+8+16=30s）他のフェッチが詰まり、
+// クライアントには `FUNCTION_INVOCATION_TIMEOUT` が返ってしまうため浅めにする。
+// リトライ予算を使い切った 429 はそのまま route ハンドラに返り、HTTP 429 として
+// クライアントが既存の自動再試行 UI に乗せる方が安全。
 async function fetchWithRateLimitRetry(
   url: string,
   init: RequestInit,
-  maxRetries = 4,
+  maxRetries = 2,
 ): Promise<Response> {
   if (init.signal?.aborted) {
     throw new DOMException('Aborted before start', 'AbortError');
@@ -115,14 +121,15 @@ async function fetchWithRateLimitRetry(
       const res = await fetch(url, init);
       if (res.status !== 429) return res;
       if (attempt >= maxRetries) return res; // 呼び出し側で 429 として処理させる
-      // Retry-After を優先、なければ指数バックオフ (2s, 4s, 8s, 16s)
+      // Retry-After を優先、なければ指数バックオフ (2s, 4s)
+      // Retry-After も Vercel タイムアウトを超えないよう 8s で頭打ち。
       const retryAfterHeader = res.headers.get('retry-after');
       let waitMs: number;
       if (retryAfterHeader) {
         const sec = parseInt(retryAfterHeader, 10);
-        waitMs = Number.isFinite(sec) && sec > 0 ? Math.min(sec * 1000, 20_000) : 2000;
+        waitMs = Number.isFinite(sec) && sec > 0 ? Math.min(sec * 1000, 8_000) : 2000;
       } else {
-        waitMs = 2000 * Math.pow(2, attempt); // 2s, 4s, 8s, 16s = 30s 合計
+        waitMs = 2000 * Math.pow(2, attempt); // 2s, 4s = 6s 合計
       }
       // レスポンス body は読まないと keep-alive 解放されない場合があるため一応消費
       try { await res.text(); } catch { /* ignore */ }
@@ -625,14 +632,18 @@ export async function fetchEarningsFromJQuants(
   // 並列度は低め（実効同時実行はグローバルセマフォ=1 で 1 のまま）。
   const maxConcurrent = options?.maxConcurrent ?? 2;
   const batchDelayMs = options?.batchDelayMs ?? 250;
-  // デフォルト 45 秒予算（60 秒関数タイムアウト - 余白 15 秒）
-  const deadlineMs = options?.deadlineMs ?? 45_000;
+  // デフォルト 25 秒予算（60 秒関数タイムアウト - 余白 35 秒）。
+  // 余白を厚めに取るのは、abort 後の results.map / JSON シリアライズ / Vercel 側の
+  // レスポンス finalize に時間がかかるケースで `FUNCTION_INVOCATION_TIMEOUT` を確実に避けるため。
+  const deadlineMs = options?.deadlineMs ?? 25_000;
   const priorYearWindowDays = options?.priorYearWindowDays ?? 5;       // ±5 = 11 dates
   const priorQuarterWindowDays = options?.priorQuarterWindowDays ?? 7; // ±7 = 15 dates
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), deadlineMs);
   const signal = controller.signal;
+  const startedAt = Date.now();
+  const remainingBudget = () => deadlineMs - (Date.now() - startedAt);
 
   try {
     const todayStmts = await fetchStatementsByDate(date, apiKey, signal);
@@ -694,9 +705,14 @@ export async function fetchEarningsFromJQuants(
     }
 
     // ── 第2段: per-code フェッチ (残予算内のみ) ──
+    // 残予算が薄い (< 8s) なら per-code は全部スキップしてクライアント refill に委譲。
+    // ここを無理に走らせて 60s 超過＝Vercel タイムアウトになるよりは、
+    // テーブルを早く返してクライアント側で漸進補完する方が UX が壊れにくい。
+    const PER_CODE_MIN_BUDGET_MS = 8_000;
     const perCodeHistory = new Map<string, RawStatementV2[]>();
     outer: for (let i = 0; i < codesNeedingPerCode.length; i += maxConcurrent) {
       if (signal.aborted) break;
+      if (remainingBudget() < PER_CODE_MIN_BUDGET_MS) break;
       const batch = codesNeedingPerCode.slice(i, i + maxConcurrent);
       await Promise.all(
         batch.map(async (code) => {
@@ -753,27 +769,38 @@ export async function fetchEarningsFromJQuants(
 /**
  * 単一銘柄の YoY 補完用。クライアントが /api/earnings/refill 経由で並列に呼び出す想定。
  * 当該日付の statement を取得しつつ、全履歴 (30d キャッシュ) で priorYear/priorQuarter を引き当てる。
+ *
+ * `deadlineMs` 指定時は、内部の /v2/fins/summary 呼び出しが期限を超えそうになったら
+ * AbortError を投げる。route ハンドラ側で 502 として返るので、クライアントは個別失敗扱いで先へ進む。
  */
 export async function fetchEarningsRefillFromJQuants(
   date: string,
   code4: string,
   apiKey: string,
+  options?: { deadlineMs?: number },
 ): Promise<EarningsData[]> {
   if (!code4) return [];
-  const [dateStmts, history] = await Promise.all([
-    fetchStatementsByDate(date, apiKey),
-    fetchStatementsByCode(code4, apiKey),
-  ]);
-  const todayForCode = dateStmts.filter((s) => localCodeTo4(s.Code) === code4);
-  if (todayForCode.length === 0) return [];
+  const deadlineMs = options?.deadlineMs ?? 20_000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), deadlineMs);
+  try {
+    const [dateStmts, history] = await Promise.all([
+      fetchStatementsByDate(date, apiKey, controller.signal),
+      fetchStatementsByCode(code4, apiKey, controller.signal),
+    ]);
+    const todayForCode = dateStmts.filter((s) => localCodeTo4(s.Code) === code4);
+    if (todayForCode.length === 0) return [];
 
-  const results = todayForCode.map((s) => {
-    const priorYear = history.length > 0 ? findPriorYearStatement(s, history) : null;
-    const priorQuarter = history.length > 0 ? findPriorQuarterStatement(s, history) : null;
-    return mapStatementToEarnings(s, { priorYear, priorQuarter, allHistory: history });
-  });
-  results.sort((a, b) => a.time.localeCompare(b.time));
-  return results;
+    const results = todayForCode.map((s) => {
+      const priorYear = history.length > 0 ? findPriorYearStatement(s, history) : null;
+      const priorQuarter = history.length > 0 ? findPriorQuarterStatement(s, history) : null;
+      return mapStatementToEarnings(s, { priorYear, priorQuarter, allHistory: history });
+    });
+    results.sort((a, b) => a.time.localeCompare(b.time));
+    return results;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 // ========== 銘柄の決算履歴（過去 N 四半期推移） ==========
@@ -781,10 +808,18 @@ export async function fetchEarningsRefillFromJQuants(
 export async function fetchCompanyHistoryFromJQuants(
   code: string,
   apiKey: string,
-  options?: { limit?: number },
+  options?: { limit?: number; deadlineMs?: number },
 ): Promise<{ history: CompanyHistoryEntry[]; scannedDates: number; matchedDocs: number }> {
   const limit = options?.limit ?? 8;
-  const allRaw = await fetchStatementsByCode(code, apiKey);
+  const deadlineMs = options?.deadlineMs ?? 30_000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), deadlineMs);
+  let allRaw: RawStatementV2[];
+  try {
+    allRaw = await fetchStatementsByCode(code, apiKey, controller.signal);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   const stmts = allRaw.filter((s) => {
     const t = classifyType(s.DocType);

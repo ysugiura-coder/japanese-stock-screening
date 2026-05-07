@@ -252,7 +252,8 @@ app/earnings/page.tsx → fetch /api/earnings?date=...&source=tdnet
 - レスポンスに会社名は含まれないため、UI 側で `/api/stocks` の stockMap から補完
 - 連結/単独・JP/IFRS の差を `periodTypeKey` で吸収して前年同期を引き当てる
 - 並列取得数 `maxConcurrent=8`
-- Vercel 関数タイムアウト 60 秒が前提
+- Vercel 関数タイムアウト 60 秒が前提。内部 deadline は安全側で `25s` (earnings 一覧) / `20s` (refill) / `30s` (history)。abort 後の `results.map` / JSON シリアライズ / Vercel finalize に最大 30s 食う劣化ケースを許容するため余白を厚めに取る
+- 429 リトライは最大 2 回 (バックオフ 2s/4s)、Retry-After も 8s で頭打ち。リトライ予算超過は HTTP 429 でクライアントの自動再試行 UI に乗せる
 - **`source=tdnet` 指定時は取得失敗時にモックへ自動フォールバックしない**。`source=auto` のときだけ warning 付きでフォールバックする
 
 ### 認証情報の取り扱い
