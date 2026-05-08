@@ -4,6 +4,10 @@ import { memoryCache, CACHE_KEYS } from '@/lib/api/cache';
 import { Stock, StocksResponse } from '@/lib/types/stock';
 import crypto from 'crypto';
 
+// 東証全上場 ~3,900 銘柄を J-Quants V1/V2 経由でページング取得するため、
+// Vercel デフォルト 10〜15s では足りない。max 60s で確保する (1 度取れば 6h キャッシュ)。
+export const maxDuration = 60;
+
 const CACHE_TTL = 6 * 3600000;
 const isDev = process.env.NODE_ENV !== 'production';
 

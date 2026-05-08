@@ -31,7 +31,9 @@ export async function fetchStocksWithApiKeyV2(
     console.log(`Using API Base: ${effectiveBase} (v2 endpoints only)`);
 
     const today = new Date().toISOString().split('T')[0];
-    const maxStocks = 1000;
+    // 東証全上場銘柄 (~3,900) を取りこぼさない値。1000 上限のままだと
+    // /v2/fins/summary が返した銘柄が stockMap に居なくて「(社名未取得)」になる事故が起きる。
+    const maxStocks = 5000;
 
     const headers: Record<string, string> = {
       'x-api-key': apiKey,

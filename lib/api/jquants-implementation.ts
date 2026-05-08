@@ -130,7 +130,9 @@ async function fetchListedInfo(idToken: string, apiBase: string): Promise<any[]>
     const allStocks: any[] = [];
     let page = 1;
     const pageSize = 100; // 1ページあたりの取得件数
-    const maxStocks = 1000; // 最大取得件数
+    // 東証全上場銘柄 (~3,900) を取りこぼさない値。
+    // 1000 上限のままだと決算ページの stockMap に居ない銘柄が「(社名未取得)」になる。
+    const maxStocks = 5000;
 
     while (allStocks.length < maxStocks) {
       const url = `${apiBase}/listed/info?date=${new Date().toISOString().split('T')[0]}&page=${page}`;
@@ -178,9 +180,10 @@ async function fetchListedInfo(idToken: string, apiBase: string): Promise<any[]>
       }
 
       page++;
-      
-      // レート制限対策: 少し待機
-      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // レート制限対策: ページ間の最小インターバル
+      // 5000 件取得時 (40+ ページ) でも Vercel 60s タイムアウトに収めるため 300ms に縮める。
+      await new Promise(resolve => setTimeout(resolve, 300));
     }
 
     console.log(`Total listed stocks fetched: ${allStocks.length}`);
