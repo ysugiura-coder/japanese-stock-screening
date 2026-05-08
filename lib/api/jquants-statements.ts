@@ -744,14 +744,29 @@ export async function fetchEarningsFromJQuants(
 
       const priorYear = pool.length > 0 ? findPriorYearStatement(s, pool) : null;
       const priorQuarter = pool.length > 0 ? findPriorQuarterStatement(s, pool) : null;
+      const mapped = mapStatementToEarnings(s, { priorYear, priorQuarter, allHistory: pool });
 
-      // 「決算/四半期」かつ YoY が null の銘柄をクライアント補完対象に積む
-      // (YoY が取れていれば実用上のメインメトリクスは充足、QoQ 限定欠損は許容)
-      if (isQuarterlyOrAnnualStatement(s.DocType) && priorYear === null && code) {
-        incompleteCodesSet.add(code);
+      // 決算/四半期書類で、YoY または QQ が「取れるはずなのに取れていない」銘柄を
+      // クライアント refill 対象に積む。
+      //   ・YoY 欠損: 前年同期 statement が date-pivot 窓内に見つからなかった。
+      //     per-code で全履歴を引けば取れる。
+      //   ・QQ 欠損: 単四半期値の連鎖計算 (3Q→2Q→1Q や 決算→3Q→2Q) で
+      //     さらに前の四半期累計が窓外なので null になっている。per-code 全履歴で連鎖が完成する。
+      // 「累計値自体が null」のフィールドは構造的に QQ も null なので refill しても無意味。
+      // 当書類の累計値が非 null かつ対応 QQ が null のものだけを QQ 欠損とみなす。
+      if (isQuarterlyOrAnnualStatement(s.DocType) && code) {
+        const yoyMissing = priorYear === null;
+        const qqMissing =
+          (toNum(s.Sales) !== null && mapped.salesQQ === null) ||
+          (toNum(s.OP) !== null && mapped.operatingProfitQQ === null) ||
+          (toNum(s.OdP) !== null && mapped.ordinaryProfitQQ === null) ||
+          (toNum(s.NP) !== null && mapped.netProfitQQ === null);
+        if (yoyMissing || qqMissing) {
+          incompleteCodesSet.add(code);
+        }
       }
 
-      return mapStatementToEarnings(s, { priorYear, priorQuarter, allHistory: pool });
+      return mapped;
     });
 
     results.sort((a, b) => a.time.localeCompare(b.time));
