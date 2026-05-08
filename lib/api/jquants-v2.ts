@@ -1,4 +1,5 @@
 import { Stock } from '@/lib/types/stock';
+import { normalizeStockCode } from '@/lib/utils/code';
 
 const V2_API_BASE = 'https://api.jquants.com/v2';
 
@@ -134,16 +135,17 @@ export async function fetchStocksWithApiKeyV2(
         if (pricePaginationKey) await new Promise((r) => setTimeout(r, 300));
       } while (pricePaginationKey);
 
+      // 価格マップは 4 桁正規化キーで構築。stockMap も 4 桁で持つので照合がズレないようにする。
       const priceMap = new Map<string, any>();
       allPrices.forEach((p: any) => {
-        const code = p.Code ?? p.code ?? '';
-        if (code) priceMap.set(String(code), p);
+        const code = normalizeStockCode(p.Code ?? p.code ?? '');
+        if (code) priceMap.set(code, p);
       });
 
       const now = new Date().toISOString();
 
       const stocks: Stock[] = limitedListedInfo.map((info: any) => {
-        const code = String(info.Code ?? info.code ?? '');
+        const code = normalizeStockCode(info.Code ?? info.code ?? '');
         const price = priceMap.get(code);
         const close = price?.AdjC ?? price?.C ?? price?.close ?? 0;
         const volume = price?.Vo ?? price?.AdjVo ?? price?.volume ?? 0;

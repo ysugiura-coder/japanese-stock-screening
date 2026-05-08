@@ -1,4 +1,5 @@
 import { Stock } from '@/lib/types/stock';
+import { normalizeStockCode } from '@/lib/utils/code';
 
 /**
  * J-Quants APIからリフレッシュトークンを取得
@@ -259,17 +260,19 @@ async function fetchPrices(idToken: string, codes: string[], apiBase: string): P
 function transformJQuantsData(listedInfo: any[], prices: any[]): Stock[] {
   const now = new Date().toISOString();
   const priceMap = new Map<string, any>();
-  
-  // 価格データをマップ化
+
+  // 価格データをマップ化（4 桁コードで正規化。stockMap・お気に入り・/stocks/[code] と一致させる）
   prices.forEach(price => {
-    priceMap.set(price.Code, price);
+    const code = normalizeStockCode(price.Code);
+    if (code) priceMap.set(code, price);
   });
 
   return listedInfo.map(info => {
-    const price = priceMap.get(info.Code);
-    
+    const code = normalizeStockCode(info.Code);
+    const price = priceMap.get(code);
+
     return {
-      code: info.Code,
+      code,
       name: info.CompanyName || info.Name,
       market: info.Section || '東証プライム',
       price: price?.Close || price?.EndValue || 0,
