@@ -640,7 +640,6 @@ export default function EarningsPage() {
   // =========== フィルタ & ソート ===========
   const filteredData = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const hasUniverse = stockMap.size > 0;
     const minCap = marketCapMin !== '' ? parseFloat(marketCapMin) : null;
     const maxCap = marketCapMax !== '' ? parseFloat(marketCapMax) : null;
 
@@ -653,14 +652,16 @@ export default function EarningsPage() {
 
       const stock = stockMap.get(item.code);
 
-      // 上場企業のみ: ユニバースに存在する銘柄だけ通す。ユニバース未ロード時は名称ベースで判定（ETF/REIT 除外のみ）
+      // 上場企業のみ: 常に名前ベースで ETF/REIT/インフラファンド等を除外する。
+      // 旧実装は「stockMap に存在するか否か」で判定していたため、
+      //   - Yahoo フォールバックで equity 限定の stockMap になっていると、
+      //     REIT/インフラファンドが提出した業績修正・配当修正が「コード未登録」扱いで全弾除外
+      //   - J-Quants 由来の stockMap に REIT が入っていると逆に素通り（名前を見ていない）
+      // という両方向のバグがあった。stockMap 由来の社名 or item.companyName のうち
+      // 取れる方で名前ベース判定し、どちらも空なら投資判断のために通す方に倒す。
       if (listedOnly) {
-        if (hasUniverse) {
-          if (!stock) return false;
-        } else {
-          // フォールバック: 名称ベースで ETF/REIT 等を除外
-          if (!isListedCompany({ name: item.companyName } as Stock)) return false;
-        }
+        const probe = stock ?? ({ name: item.companyName || '' } as Stock);
+        if (!isListedCompany(probe)) return false;
       }
 
       // お気に入り銘柄のみ
