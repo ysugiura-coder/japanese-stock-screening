@@ -6,6 +6,7 @@ import { Stock } from '@/lib/types/stock';
 import { SortField, SortDirection } from '@/lib/types/stock';
 import { sortStocks } from '@/lib/utils/screening';
 import { isFavorite, addFavorite, removeFavorite } from '@/lib/utils/favorites';
+import { EarningsGrowth, GrowthMetricKey, growthValue } from '@/lib/utils/earningsOverlay';
 import {
   formatNumber,
   formatCurrency,
@@ -20,13 +21,42 @@ import { Label } from './ui/label';
 
 interface StockTableProps {
   stocks: Stock[];
+  /** 決算成長率オーバーレイ（code → 最新開示の QQ/YY）。渡されたとき決算列を追加表示する。 */
+  growthOverlay?: Map<string, EarningsGrowth>;
 }
 
 const ITEMS_PER_PAGE_OPTIONS = [10, 20, 50, 100] as const;
 const STORAGE_KEY = 'stock-screening-items-per-page';
 
-export function StockTable({ stocks }: StockTableProps) {
-  const [sortField, setSortField] = useState<SortField>('code');
+// メイン画面に重ねる決算成長率の表示列（省スペースのため代表4指標のみ）
+const GROWTH_COLS: { key: GrowthMetricKey; label: string }[] = [
+  { key: 'operatingProfitQQ', label: '営QQ' },
+  { key: 'netProfitQQ', label: '利QQ' },
+  { key: 'operatingProfitYY', label: '営YY' },
+  { key: 'netProfitYY', label: '利YY' },
+];
+
+const GROWTH_KEYS = new Set<string>(GROWTH_COLS.map((c) => c.key));
+
+// ソート対象は Stock のキー or 成長率キー
+type TableSortField = SortField | GrowthMetricKey;
+
+/** 成長率セル（緑=増/赤=減、null は —）。title に採用開示日を出して鮮度を明示 */
+function GrowthCell({ value, disclosedDate }: { value: number | null; disclosedDate?: string }) {
+  if (value === null || value === undefined) {
+    return <span className="text-gray-300" title="直近期間に該当決算なし">—</span>;
+  }
+  const cls = value >= 0 ? 'text-green-600' : 'text-red-600';
+  return (
+    <span className={cls} title={disclosedDate ? `開示日 ${disclosedDate}` : undefined}>
+      {value >= 0 ? '+' : ''}{value.toFixed(1)}%
+    </span>
+  );
+}
+
+export function StockTable({ stocks, growthOverlay }: StockTableProps) {
+  const showGrowth = !!growthOverlay;
+  const [sortField, setSortField] = useState<TableSortField>('code');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState<number>(20);
@@ -57,8 +87,20 @@ export function StockTable({ stocks }: StockTableProps) {
   }, [itemsPerPage]);
 
   const sortedStocks = useMemo(() => {
-    return sortStocks(stocks, sortField, sortDirection);
-  }, [stocks, sortField, sortDirection]);
+    // 成長率列でのソートはオーバーレイ値を参照（null は常に末尾）
+    if (GROWTH_KEYS.has(sortField as string) && growthOverlay) {
+      const key = sortField as GrowthMetricKey;
+      return [...stocks].sort((a, b) => {
+        const av = growthValue(growthOverlay.get(a.code), key);
+        const bv = growthValue(growthOverlay.get(b.code), key);
+        if (av === null && bv === null) return 0;
+        if (av === null) return 1;
+        if (bv === null) return -1;
+        return sortDirection === 'asc' ? av - bv : bv - av;
+      });
+    }
+    return sortStocks(stocks, sortField as SortField, sortDirection);
+  }, [stocks, sortField, sortDirection, growthOverlay]);
 
   const paginatedStocks = useMemo(() => {
     const start = (currentPage - 1) * itemsPerPage;
@@ -74,12 +116,13 @@ export function StockTable({ stocks }: StockTableProps) {
     setCurrentPage(1);
   };
 
-  const handleSort = (field: SortField) => {
+  const handleSort = (field: TableSortField) => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     } else {
       setSortField(field);
-      setSortDirection('asc');
+      // 成長率列は「大きい順」で見たいことが多いので初期 desc
+      setSortDirection(GROWTH_KEYS.has(field as string) ? 'desc' : 'asc');
     }
   };
 
@@ -112,7 +155,7 @@ export function StockTable({ stocks }: StockTableProps) {
     }
   };
 
-  const SortIcon = ({ field }: { field: SortField }) => {
+  const SortIcon = ({ field }: { field: TableSortField }) => {
     if (sortField !== field) return <span className="text-gray-300">↕</span>;
     return sortDirection === 'asc' ? <span className="text-blue-600">↑</span> : <span className="text-blue-600">↓</span>;
   };
@@ -179,6 +222,19 @@ export function StockTable({ stocks }: StockTableProps) {
                   </div>
                 </th>
               ))}
+              {showGrowth && GROWTH_COLS.map(({ key, label }) => (
+                <th
+                  key={key}
+                  className="px-3 py-3 text-left text-xs font-medium text-purple-600 uppercase cursor-pointer hover:bg-gray-100 transition-colors"
+                  onClick={() => handleSort(key)}
+                  title="直近決算の成長率（QQ=前四半期比 / YY=前年同期比）"
+                >
+                  <div className="flex items-center gap-1">
+                    {label}
+                    <SortIcon field={key} />
+                  </div>
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
@@ -208,6 +264,14 @@ export function StockTable({ stocks }: StockTableProps) {
                 <td className="px-3 py-3 text-sm">{formatNumber(stock.pbr)}</td>
                 <td className="px-3 py-3 text-sm">{formatPercent(stock.roe)}</td>
                 <td className="px-3 py-3 text-sm">{formatPercent(stock.dividendYield)}</td>
+                {showGrowth && GROWTH_COLS.map(({ key }) => {
+                  const g = growthOverlay!.get(stock.code);
+                  return (
+                    <td key={key} className="px-3 py-3 text-sm font-medium">
+                      <GrowthCell value={growthValue(g, key)} disclosedDate={g?.disclosedDate} />
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>
@@ -243,6 +307,18 @@ export function StockTable({ stocks }: StockTableProps) {
               <div>時価総額 <span className="text-gray-900 font-medium">{formatMarketCap(stock.marketCap)}</span></div>
               <div>出来高 <span className="text-gray-900 font-medium">{formatVolume(stock.volume)}</span></div>
             </div>
+            {showGrowth && (
+              <div className="grid grid-cols-4 gap-x-3 gap-y-1 text-xs text-purple-600 mt-1.5 pt-1.5 border-t border-gray-100">
+                {GROWTH_COLS.map(({ key, label }) => {
+                  const g = growthOverlay!.get(stock.code);
+                  return (
+                    <div key={key}>
+                      {label} <GrowthCell value={growthValue(g, key)} disclosedDate={g?.disclosedDate} />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ))}
       </div>

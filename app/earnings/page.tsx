@@ -124,6 +124,12 @@ export default function EarningsPage() {
   const [marketCapMin, setMarketCapMin] = useState<string>(''); // 億円、空文字で無制限
   const [marketCapMax, setMarketCapMax] = useState<string>('');
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
+  // 業績しきい値フィルタ（QQ/YY で実際に銘柄を絞り込む = スクリーニングの本丸）。
+  // growthMin / growthMax がどちらも空なら無効。値は % 文字列。
+  // 対象指標 (growthMetric) が null の書類（業績修正・配当修正など）は自動的に除外される。
+  const [growthMetric, setGrowthMetric] = useState<string>('operatingProfitQQ');
+  const [growthMin, setGrowthMin] = useState<string>('');
+  const [growthMax, setGrowthMax] = useState<string>('');
   const [showAdvFilters, setShowAdvFilters] = useState(false);
   const [favoritesSet, setFavoritesSet] = useState<Set<string>>(new Set());
   const [surpriseThreshold, setSurpriseThreshold] = useState<number>(DEFAULT_SURPRISE_THRESHOLD);
@@ -205,6 +211,9 @@ export default function EarningsPage() {
         if (typeof a.marketCapMin === 'string') setMarketCapMin(a.marketCapMin);
         if (typeof a.marketCapMax === 'string') setMarketCapMax(a.marketCapMax);
         if (typeof a.quickFilter === 'string') setQuickFilter(a.quickFilter);
+        if (typeof a.growthMetric === 'string') setGrowthMetric(a.growthMetric);
+        if (typeof a.growthMin === 'string') setGrowthMin(a.growthMin);
+        if (typeof a.growthMax === 'string') setGrowthMax(a.growthMax);
       }
       const savedThreshold = localStorage.getItem(SURPRISE_THRESHOLD_STORAGE);
       if (savedThreshold) {
@@ -560,12 +569,15 @@ export default function EarningsPage() {
           marketCapMin,
           marketCapMax,
           quickFilter,
+          growthMetric,
+          growthMin,
+          growthMax,
         }),
       );
     } catch {
       // localStorage使用不可
     }
-  }, [listedOnly, favoritesOnly, selectedExchanges, selectedMarkets, marketCapMin, marketCapMax, quickFilter, filtersLoaded]);
+  }, [listedOnly, favoritesOnly, selectedExchanges, selectedMarkets, marketCapMin, marketCapMax, quickFilter, growthMetric, growthMin, growthMax, filtersLoaded]);
 
   // サプライズ閾値変更時に localStorage へ保存
   useEffect(() => {
@@ -705,6 +717,17 @@ export default function EarningsPage() {
           break;
       }
 
+      // 業績しきい値フィルタ（QQ/YY で絞り込み）。
+      // 対象指標が null（= その書類に該当の伸び率が無い）の銘柄は除外する。
+      if (growthMin !== '' || growthMax !== '') {
+        const v = item[growthMetric as keyof EarningsData] as number | null | undefined;
+        if (v === null || v === undefined) return false;
+        const lo = growthMin !== '' ? parseFloat(growthMin) : null;
+        const hi = growthMax !== '' ? parseFloat(growthMax) : null;
+        if (lo !== null && Number.isFinite(lo) && v < lo) return false;
+        if (hi !== null && Number.isFinite(hi) && v > hi) return false;
+      }
+
       // テキスト検索
       if (q && !item.code.toLowerCase().includes(q) && !item.companyName.toLowerCase().includes(q)) return false;
       return true;
@@ -720,6 +743,9 @@ export default function EarningsPage() {
     marketCapMin,
     marketCapMax,
     quickFilter,
+    growthMetric,
+    growthMin,
+    growthMax,
     stockMap,
     favoritesSet,
   ]);
@@ -1053,6 +1079,8 @@ export default function EarningsPage() {
     setMarketCapMin('');
     setMarketCapMax('');
     setQuickFilter('all');
+    setGrowthMin('');
+    setGrowthMax('');
   };
 
   const advFilterActiveCount =
@@ -1060,7 +1088,8 @@ export default function EarningsPage() {
     (selectedExchanges.size > 0 ? 1 : 0) +
     (selectedMarkets.size > 0 ? 1 : 0) +
     (marketCapMin !== '' || marketCapMax !== '' ? 1 : 0) +
-    (quickFilter !== 'all' ? 1 : 0);
+    (quickFilter !== 'all' ? 1 : 0) +
+    (growthMin !== '' || growthMax !== '' ? 1 : 0);
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
@@ -1228,6 +1257,80 @@ export default function EarningsPage() {
             {/* 2段目: 詳細フィルタ（折りたたみ） */}
             {showAdvFilters && (
               <div className="pt-2 border-t border-gray-700 space-y-2">
+                {/* 業績しきい値で絞り込み（QQ/YY を実際にスクリーニング）。
+                    「QQが1番欲しいデータ」= ソートだけでなく閾値で銘柄を絞れることが核心。 */}
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-gray-400">業績で絞り込み:</span>
+                  <select
+                    value={growthMetric}
+                    onChange={(e) => setGrowthMetric(e.target.value)}
+                    className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white"
+                    title="絞り込みに使う伸び率指標"
+                  >
+                    <optgroup label="前四半期比 (QQ)">
+                      <option value="operatingProfitQQ">営業利益 QQ</option>
+                      <option value="netProfitQQ">純利益 QQ</option>
+                      <option value="ordinaryProfitQQ">経常利益 QQ</option>
+                      <option value="salesQQ">売上 QQ</option>
+                    </optgroup>
+                    <optgroup label="前年同期比 (YY)">
+                      <option value="operatingProfitYY">営業利益 YY</option>
+                      <option value="netProfitYY">純利益 YY</option>
+                      <option value="ordinaryProfitYY">経常利益 YY</option>
+                      <option value="salesYY">売上 YY</option>
+                    </optgroup>
+                  </select>
+                  <input
+                    type="number"
+                    placeholder="最小"
+                    value={growthMin}
+                    onChange={(e) => setGrowthMin(e.target.value)}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white placeholder-gray-500"
+                  />
+                  <span className="text-gray-500">〜</span>
+                  <input
+                    type="number"
+                    placeholder="最大"
+                    value={growthMax}
+                    onChange={(e) => setGrowthMax(e.target.value)}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white placeholder-gray-500"
+                  />
+                  <span className="text-gray-500">%</span>
+                  {/* ワンタップのプリセット（モバイルで片手操作できるように） */}
+                  <button
+                    type="button"
+                    onClick={() => { setGrowthMin('20'); setGrowthMax(''); }}
+                    className="px-2 py-0.5 rounded text-xs border bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600"
+                  >
+                    急成長 +20%↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setGrowthMin('10'); setGrowthMax(''); }}
+                    className="px-2 py-0.5 rounded text-xs border bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600"
+                  >
+                    +10%↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setGrowthMin(''); setGrowthMax('0'); }}
+                    className="px-2 py-0.5 rounded text-xs border bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600"
+                  >
+                    悪化 〈0
+                  </button>
+                  {(growthMin !== '' || growthMax !== '') && (
+                    <button
+                      type="button"
+                      onClick={() => { setGrowthMin(''); setGrowthMax(''); }}
+                      className="text-xs text-gray-400 hover:text-white ml-1"
+                    >
+                      ✕ クリア
+                    </button>
+                  )}
+                  <span className="text-gray-600 ml-2">
+                    選んだ伸び率がしきい値内の銘柄だけ表示。QQ/YY が無い書類（業績修正・配当修正）は除外。
+                  </span>
+                </div>
                 {/* 上場場所（取引所） */}
                 {availableExchanges.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -1339,15 +1442,22 @@ export default function EarningsPage() {
             )}
           </div>
 
-          {/* 伸び率ソートプリセット（時短の本丸：1クリックで「伸びた順／崩れた順」） */}
+          {/* 伸び率ソートプリセット（時短の本丸：1クリックで「伸びた順／崩れた順」）
+              QQ (前四半期比) はトレンドの折れ目を最速で掴めるので、YY より上 (左) に置く。 */}
           {earningsData.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 mb-3">
               <span className="text-xs text-gray-400 mr-1">並び替え:</span>
               {[
-                { key: 'operatingProfitYY', dir: 'desc' as const, label: '営業利益 伸びた順', icon: '📈' },
-                { key: 'operatingProfitYY', dir: 'asc' as const, label: '営業利益 崩れた順', icon: '📉' },
-                { key: 'netProfitYY', dir: 'desc' as const, label: '純利益 伸びた順', icon: '💰' },
-                { key: 'salesYY', dir: 'desc' as const, label: '売上 伸びた順', icon: '🛒' },
+                // QQ 系: 直近の単四半期トレンド
+                { key: 'operatingProfitQQ', dir: 'desc' as const, label: '営業利益 QQ↑', icon: '🚀' },
+                { key: 'operatingProfitQQ', dir: 'asc' as const, label: '営業利益 QQ↓', icon: '🔻' },
+                { key: 'netProfitQQ', dir: 'desc' as const, label: '純利益 QQ↑', icon: '💎' },
+                { key: 'salesQQ', dir: 'desc' as const, label: '売上 QQ↑', icon: '🛍️' },
+                // YY 系: 前年同期比
+                { key: 'operatingProfitYY', dir: 'desc' as const, label: '営業利益 YY↑', icon: '📈' },
+                { key: 'operatingProfitYY', dir: 'asc' as const, label: '営業利益 YY↓', icon: '📉' },
+                { key: 'netProfitYY', dir: 'desc' as const, label: '純利益 YY↑', icon: '💰' },
+                { key: 'salesYY', dir: 'desc' as const, label: '売上 YY↑', icon: '🛒' },
               ].map((preset) => {
                 const active = sortConfig?.key === preset.key && sortConfig?.direction === preset.dir;
                 return (
@@ -1387,7 +1497,7 @@ export default function EarningsPage() {
                         ? 'bg-yellow-500/15 text-yellow-400'
                         : 'bg-orange-500/15 text-orange-400'
                   }`}
-                  title={`決算・四半期 ${yoyStats.expected}件のうち、YoY を少なくとも 1つ抽出できた件数。低い場合は前年同期 statement が J-Quants 履歴内に見つからなかった可能性があります。`}
+                  title={`決算・四半期 ${yoyStats.expected}件のうち、YoY を少なくとも 1つ抽出できた件数。四半期短信の YoY は「当期単四半期 vs 前年同四半期単独」(例: FY26 Q3 vs FY25 Q3)、通期決算は「通期累計 vs 前年通期累計」で算出。低い場合は前年同期 (または前年の直前Q) の statement が J-Quants 履歴内に見つからなかった可能性があります。同じ日付を再度開くとサーバ側キャッシュに少しずつ蓄積され、徐々に埋まります。`}
                 >
                   YoY抽出 {yoyStats.extracted}/{yoyStats.expected}件 ({yoyStats.rate}%)
                 </span>
@@ -1521,8 +1631,16 @@ export default function EarningsPage() {
                             </th>
                           );
                         }
+                        const tooltip = col.kind === 'qq'
+                          ? '前四半期比 (単四半期 vs 直前四半期、1Q は前FY末との比較)'
+                          : '前年同期比。四半期短信: 当期単四半期 vs 前年同四半期単独 (例: FY26 Q3 vs FY25 Q3)。通期決算: 通期累計 vs 前年通期累計。';
                         return (
-                          <th key={col.key} onClick={() => handleSort(col.key)} className={sortableThClass}>
+                          <th
+                            key={col.key}
+                            onClick={() => handleSort(col.key)}
+                            className={sortableThClass}
+                            title={tooltip}
+                          >
                             {col.label}{sortIcon(col.key)}
                           </th>
                         );
@@ -1633,13 +1751,16 @@ export default function EarningsPage() {
               </div>
             </div>
 
-            {/* モバイル: ソート切替 */}
-            <div className="md:hidden flex items-center gap-2 mb-2">
+            {/* モバイル: ソート切替 (QQ を YY より前に出す。QQ が直近トレンドを掴むのに最も有用) */}
+            <div className="md:hidden flex flex-wrap items-center gap-1.5 mb-2">
               <span className="text-xs text-gray-400">並替:</span>
               {[
-                { key: 'salesYY', label: '売YY' },
+                { key: 'operatingProfitQQ', label: '営QQ' },
+                { key: 'netProfitQQ', label: '利QQ' },
+                { key: 'salesQQ', label: '売QQ' },
                 { key: 'operatingProfitYY', label: '営YY' },
                 { key: 'netProfitYY', label: '利YY' },
+                { key: 'salesYY', label: '売YY' },
               ].map((col) => (
                 <button
                   key={col.key}
