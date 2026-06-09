@@ -462,26 +462,14 @@ export function mapStatementToEarnings(
   const code = localCodeTo4(s.Code);
   const time = (s.DiscTime || '').substring(0, 5); // HH:MM
   const isFirstQuarter = s.CurPerType === '1Q';
-  const isFy = s.CurPerType === 'FY';
   const allHistory = opts.allHistory ?? [];
   // 業績修正・配当修正のような書類は Sales/OP が予想値 or 空のため、
   // 累計→単独変換も YoY 引き当ても意味を持たない。これらは数値列を全て null で返す。
   const isStatement = isQuarterlyOrAnnualStatement(s.DocType);
 
-  // 累計値（通期 YoY 計算と通期計画進捗用）。決算/四半期短信のときのみ採用。
-  const salesCum = isStatement ? toNum(s.Sales) : null;
-  const opCum = isStatement ? toNum(s.OP) : null;
-  const ordCum = isStatement ? toNum(s.OdP) : null;
-  const netCum = isStatement ? toNum(s.NP) : null;
-
-  const prevSalesCum = isStatement && opts.priorYear ? toNum(opts.priorYear.Sales) : null;
-  const prevOpCum = isStatement && opts.priorYear ? toNum(opts.priorYear.OP) : null;
-  const prevOrdCum = isStatement && opts.priorYear ? toNum(opts.priorYear.OdP) : null;
-  const prevNetCum = isStatement && opts.priorYear ? toNum(opts.priorYear.NP) : null;
-
   // ── 単四半期値 (QQ + 四半期 YoY 両方で使う) ──
   // 旧 YoY 実装は累計 vs 累計だったが、投資家が見たいのは「当四半期の単独業績 vs 前年同四半期の単独業績」。
-  // 1Q-3Q では単四半期化、FY (通期決算) は累計 vs 累計 (= 通期 vs 通期) のまま残す。
+  // FY (本決算) も含め全ての四半期で単四半期化する。FY の単四半期 = 通期累計 − 当FY 3Q累計 (= Q4単独)。
   const salesSingle = isStatement ? singleQuarterValueOf(s, allHistory, 'Sales') : null;
   const opSingle = isStatement ? singleQuarterValueOf(s, allHistory, 'OP') : null;
   const ordSingle = isStatement ? singleQuarterValueOf(s, allHistory, 'OdP') : null;
@@ -509,9 +497,10 @@ export function mapStatementToEarnings(
       ? findPriorFYQ4Single(s, allHistory, 'NP')
       : priorQ ? singleQuarterValueOf(priorQ, allHistory, 'NP') : null;
 
-  // YoY 比較先 (四半期短信のみ): 前年同期 statement の単四半期値。
+  // YoY 比較先: 前年同期 statement の単四半期値。
   // 例: FY26 Q3 のYoY = (FY26 Q3単独) vs (FY25 Q3単独)。
-  // priorYear が 1Q なら累計＝単独なのでそのまま、2Q+ なら priorYear のさらに前Qの累計が pool に必要。
+  //     FY26 本決算 のYoY = (FY26 Q4単独) vs (FY25 Q4単独)。
+  // priorYear が 1Q なら累計＝単独なのでそのまま、2Q+/FY なら priorYear のさらに前Qの累計が pool に必要。
   // ない場合は null になり incomplete 判定で refill 対象に積まれる。
   const prevSalesSingleY = !isStatement || !opts.priorYear
     ? null
@@ -526,11 +515,11 @@ export function mapStatementToEarnings(
     ? null
     : singleQuarterValueOf(opts.priorYear, allHistory, 'NP');
 
-  // FY は累計 vs 累計、1Q-3Q は単独 vs 単独 で YoY を算出。
-  const salesYY = isFy ? pct(salesCum, prevSalesCum) : pct(salesSingle, prevSalesSingleY);
-  const operatingProfitYY = isFy ? pct(opCum, prevOpCum) : pct(opSingle, prevOpSingleY);
-  const ordinaryProfitYY = isFy ? pct(ordCum, prevOrdCum) : pct(ordSingle, prevOrdSingleY);
-  const netProfitYY = isFy ? pct(netCum, prevNetCum) : pct(netSingle, prevNetSingleY);
+  // YoY は全四半期で単独 vs 前年同四半期単独。FY (本決算) も Q4単独 vs 前年Q4単独。
+  const salesYY = pct(salesSingle, prevSalesSingleY);
+  const operatingProfitYY = pct(opSingle, prevOpSingleY);
+  const ordinaryProfitYY = pct(ordSingle, prevOrdSingleY);
+  const netProfitYY = pct(netSingle, prevNetSingleY);
 
   const divCurrent = toNum(s.DivAnn);
   const divForecast = toNum(s.FDivAnn);
@@ -727,9 +716,9 @@ export async function fetchEarningsFromJQuants(
     }
 
     // ── per-code フォールバックが必要な銘柄を判定 ──
-    // 窓だけで YoY (と 2Q+ なら QoQ も) が引ければ十分。
+    // 窓だけで YoY (と 2Q+/FY なら QoQ も) が引ければ十分。
     // どちらかでも欠ける銘柄を per-code 補完候補にする。
-    // 単四半期 YoY を出すには、target が 2Q+ なら priorYear のさらに前Q累計が pool にあることも必要。
+    // 単四半期 YoY を出すには、target が 2Q+/FY なら priorYear のさらに前Q累計が pool にあることも必要。
     const codesNeedingPerCode: string[] = [];
     for (const code of codesNeedingHistory) {
       const pool = buildPoolForCode(code);
@@ -739,11 +728,11 @@ export async function fetchEarningsFromJQuants(
       const allResolved = todayForCode.every((s) => {
         const py = findPriorYearStatement(s, pool);
         if (py === null) return false;
-        // FY は累計のみで足りる
-        if (s.CurPerType === 'FY') return true;
         // 1Q は当期も前年も累計＝単独なので priorYear だけで足りる
         if (s.CurPerType === '1Q') return true;
-        // 2Q+ は同FY内の直前Q (当期側) + 前年の直前Q (前年側) が両方必要
+        // 2Q+/FY は単独 vs 前年同期単独。
+        // 同FY内の直前Q (当期側=当FY 3Q 等) + 前年の直前Q (前年側) が両方必要。
+        // FY の単独 = 通期累計 − 当FY 3Q累計、前年FY単独 = 前年通期累計 − 前年 3Q累計。
         const pq = findPriorQuarterStatement(s, pool);
         const pypq = findPriorQuarterStatement(py, pool);
         return pq !== null && pypq !== null;
@@ -795,14 +784,18 @@ export async function fetchEarningsFromJQuants(
 
       // 決算/四半期書類で、YoY または QQ が「取れるはずなのに取れていない」銘柄を
       // クライアント refill 対象に積む。
-      //   ・YoY 欠損: 前年同期 statement が date-pivot 窓内に見つからなかった。
-      //     per-code で全履歴を引けば取れる。
+      //   ・YoY 欠損: 前年同期 statement (または FY/2Q+ なら前年の直前Q累計) が
+      //     date-pivot 窓内に見つからず単四半期 YoY が組めない。per-code 全履歴で取れる。
       //   ・QQ 欠損: 単四半期値の連鎖計算 (3Q→2Q→1Q や 決算→3Q→2Q) で
       //     さらに前の四半期累計が窓外なので null になっている。per-code 全履歴で連鎖が完成する。
-      // 「累計値自体が null」のフィールドは構造的に QQ も null なので refill しても無意味。
-      // 当書類の累計値が非 null かつ対応 QQ が null のものだけを QQ 欠損とみなす。
+      // 「累計値自体が null」のフィールドは構造的に YoY/QQ も null なので refill しても無意味。
+      // 当書類の累計値が非 null かつ対応 YoY/QQ が null のものだけを欠損とみなす。
       if (isQuarterlyOrAnnualStatement(s.DocType) && code) {
-        const yoyMissing = priorYear === null;
+        const yoyMissing =
+          (toNum(s.Sales) !== null && mapped.salesYY === null) ||
+          (toNum(s.OP) !== null && mapped.operatingProfitYY === null) ||
+          (toNum(s.OdP) !== null && mapped.ordinaryProfitYY === null) ||
+          (toNum(s.NP) !== null && mapped.netProfitYY === null);
         const qqMissing =
           (toNum(s.Sales) !== null && mapped.salesQQ === null) ||
           (toNum(s.OP) !== null && mapped.operatingProfitQQ === null) ||
@@ -916,14 +909,9 @@ export async function fetchCompanyHistoryFromJQuants(
     const opCum = toNum(s.OP);
     const netCum = toNum(s.NP);
 
-    const prevSalesCum = priorYear ? toNum(priorYear.Sales) : null;
-    const prevOpCum = priorYear ? toNum(priorYear.OP) : null;
-    const prevNetCum = priorYear ? toNum(priorYear.NP) : null;
-
     const isFirstQuarter = s.CurPerType === '1Q';
-    const isFy = s.CurPerType === 'FY';
 
-    // 単四半期値 (QoQ + 四半期 YoY 両方で使う)。FY (通期) は累計のまま扱う。
+    // 単四半期値 (QoQ + 四半期 YoY 両方で使う)。FY (本決算) も Q4単独 = 通期累計 − 当FY 3Q累計。
     const salesSingle = singleQuarterValueOf(s, ordered, 'Sales');
     const opSingle = singleQuarterValueOf(s, ordered, 'OP');
     const netSingle = singleQuarterValueOf(s, ordered, 'NP');
@@ -954,10 +942,10 @@ export async function fetchCompanyHistoryFromJQuants(
       salesCum,
       opProfitCum: opCum,
       netProfitCum: netCum,
-      // FY は累計 vs 累計 (= 通期 YoY)、1Q-3Q は単独 vs 単独
-      salesYY: isFy ? pct(salesCum, prevSalesCum) : pct(salesSingle, prevSalesSingleY),
-      opYY: isFy ? pct(opCum, prevOpCum) : pct(opSingle, prevOpSingleY),
-      netYY: isFy ? pct(netCum, prevNetCum) : pct(netSingle, prevNetSingleY),
+      // YoY は全四半期で単独 vs 前年同四半期単独。FY (本決算) も Q4単独 vs 前年Q4単独。
+      salesYY: pct(salesSingle, prevSalesSingleY),
+      opYY: pct(opSingle, prevOpSingleY),
+      netYY: pct(netSingle, prevNetSingleY),
       salesQQ: pct(salesSingle, prevSalesSingleQ),
       opQQ: pct(opSingle, prevOpSingleQ),
       netQQ: pct(netSingle, prevNetSingleQ),

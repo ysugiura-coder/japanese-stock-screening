@@ -71,7 +71,7 @@ npm run lint     # ESLint チェック
 | 決算の YoY 欠損バッジ | 実装済 | `app/earnings/page.tsx` | 決算/四半期 で null の時 "N/A" バッジ表示 |
 | 決算の伸び率ソートプリセット | 実装済 | `app/earnings/page.tsx` | 営業/純/売上の QQ/YY 昇降順プリセットボタン（QQ を YY より前に配置） |
 | 決算の QQ/YY しきい値絞り込み | 実装済 | `app/earnings/page.tsx` | 詳細パネル内。指標（営/利/経/売の QQ or YY）を選び min〜max% で絞り込み。ワンタップ chip（+20%↑/+10%↑/〈0）。localStorage 永続化 |
-| QQ（単四半期）算出 | 実装済 | `lib/api/jquants-statements.ts::singleQuarterValueOf` | 当期Q累計 − 同FY内直前Q累計。1Q は前FY末(Q4)単独と比較。YoY も 1Q-3Q は単四半期 vs 前年同四半期単独（例 FY26 Q3 vs FY25 Q3）、FY のみ累計同士 |
+| QQ（単四半期）算出 | 実装済 | `lib/api/jquants-statements.ts::singleQuarterValueOf` | 当期Q累計 − 同FY内直前Q累計。1Q は前FY末(Q4)単独と比較。YoY は **FY 含む全四半期で単四半期 vs 前年同四半期単独**（例 FY26 Q3 vs FY25 Q3、本決算は FY26 Q4単独 vs FY25 Q4単独。Q4単独 = 通期累計 − 当FY 3Q累計）。前年Q4単独算出には前年通期+前年3Q累計が要るため date-pivot 窓 (-365/-455) で引けない銘柄はクライアント refill 対象 |
 | メイン画面の決算成長率オーバーレイ | 実装済 | `app/page.tsx`, `lib/utils/earningsOverlay.ts`, `app/components/StockTable.tsx` | opt-in トグル。指定期間（既定 直近30日）の各営業日決算をクライアントで取得し code 単位に最新開示を畳み込み、株価表に営/利の QQ/YY 列を追加＋ソート＋しきい値絞り込み。「割安×増益」複合スクリーニング用。決算が無い銘柄は「—」 |
 | YoY 抽出成功率バッジ | 実装済 | `app/earnings/page.tsx` | 前年同期 statement 引き当て成功率を可視化 |
 | 銘柄の四半期推移ビュー（過去 8Q） | 実データ | `app/api/earnings/history/`, `lib/api/jquants-statements.ts::fetchCompanyHistoryFromJQuants` | 詳細パネル内、棒グラフ＋テーブル＋通期計画進捗率 |
